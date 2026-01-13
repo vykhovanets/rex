@@ -36,6 +36,8 @@ Claude Code can use rex too - same speed, no round-trips to the web.
 | `rex_members` | List class/module members |
 | `rex_index` | Rebuild index |
 
+![example](./example.jpg)
+
 ## License
 
 MIT
