@@ -208,52 +208,52 @@ async def run_server():
 # =============================================================================
 
 
-def get_settings_path() -> Path:
-    """Get project-local Claude settings path."""
-    return Path.cwd() / ".claude" / "settings.json"
+def get_mcp_json_path() -> Path:
+    """Get project's .mcp.json path."""
+    return Path.cwd() / ".mcp.json"
 
 
-def load_settings() -> dict:
-    """Load existing settings or return empty dict."""
-    path = get_settings_path()
+def load_mcp_json() -> dict:
+    """Load existing .mcp.json or return empty dict."""
+    path = get_mcp_json_path()
     if path.exists():
         return json.loads(path.read_text())
     return {}
 
 
-def save_settings(settings: dict) -> None:
-    """Save settings to file."""
-    path = get_settings_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(settings, indent=2) + "\n")
+def save_mcp_json(config: dict) -> None:
+    """Save .mcp.json file."""
+    path = get_mcp_json_path()
+    path.write_text(json.dumps(config, indent=2) + "\n")
 
 
 def install() -> None:
-    """Register rex MCP server with Claude Code."""
-    settings = load_settings()
+    """Register rex MCP server in project's .mcp.json."""
+    config = load_mcp_json()
 
-    if "mcpServers" not in settings:
-        settings["mcpServers"] = {}
+    if "mcpServers" not in config:
+        config["mcpServers"] = {}
 
-    settings["mcpServers"]["rex"] = {
-        "command": "uv",
-        "args": ["run", "rex-mcp", "serve"],
+    config["mcpServers"]["rex"] = {
+        "command": "rex-mcp",
+        "args": ["serve"],
     }
 
-    save_settings(settings)
-    print(f"✓ Registered rex MCP server in {get_settings_path()}")
+    save_mcp_json(config)
+    print(f"✓ Registered rex MCP server in {get_mcp_json_path()}")
     print("  Restart Claude Code to activate.")
+    print("  Note: Project MCP servers require approval on first use.")
 
 
 def uninstall() -> None:
     """Remove rex MCP server registration."""
-    settings = load_settings()
+    config = load_mcp_json()
 
-    if "mcpServers" in settings and "rex" in settings["mcpServers"]:
-        del settings["mcpServers"]["rex"]
-        if not settings["mcpServers"]:
-            del settings["mcpServers"]
-        save_settings(settings)
+    if "mcpServers" in config and "rex" in config["mcpServers"]:
+        del config["mcpServers"]["rex"]
+        if not config["mcpServers"]:
+            del config["mcpServers"]
+        save_mcp_json(config)
         print("✓ Removed rex MCP server registration.")
     else:
         print("rex MCP server not registered.")
