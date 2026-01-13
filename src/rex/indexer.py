@@ -201,7 +201,11 @@ def parse_file(file_path: Path, module_name: str) -> list[Symbol]:
             )
         )
 
-    extractor.visit(tree)
+    try:
+        extractor.visit(tree)
+    except RecursionError:
+        # Some files have deeply nested AST (e.g., generated math expressions)
+        pass
     return extractor.symbols
 
 
