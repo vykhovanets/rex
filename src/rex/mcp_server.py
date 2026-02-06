@@ -150,12 +150,18 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         raw_dirs = arguments.get("project_dirs")
         project_dirs = [Path(d).resolve() for d in raw_dirs] if raw_dirs else None
         try:
+            from .indexer import find_venv
+            from .storage import get_db_path
+
+            venv = find_venv()
             count = build_index(force=force, project_dirs=project_dirs)
             if count == -1:
                 return [TextContent(type="text", text="Index is up-to-date.")]
             msg = f"Indexed {count:,} symbols."
             if project_dirs:
                 msg += f" (including {len(project_dirs)} project dir(s))"
+            if venv:
+                msg += f"\nDB: {get_db_path(venv)}"
             return [TextContent(type="text", text=msg)]
         except RuntimeError as e:
             return [TextContent(type="text", text=f"Error: {e}")]
