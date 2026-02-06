@@ -16,45 +16,14 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-from .storage import build_index, get_members, get_stats, get_symbol, search
+from .api import format_symbol_detail, format_symbol_line, show_symbol
+from .storage import build_index, get_members, get_stats, search
 
 # =============================================================================
 # MCP Server
 # =============================================================================
 
 server = Server("rex")
-
-
-def _short_name(qualified_name: str) -> str:
-    """Extract short name: 'pkg.mod.Class.method' -> 'Class.method'."""
-    parts = qualified_name.split(".")
-    if len(parts) <= 2:
-        return qualified_name
-    # Keep last 2 parts (Class.method or module.function)
-    return ".".join(parts[-2:])
-
-
-def _first_line(docstring: str | None) -> str:
-    """Extract first meaningful line of docstring."""
-    if not docstring:
-        return ""
-    line = docstring.strip().split("\n")[0].strip()
-    if len(line) > 80:
-        line = line[:77] + "..."
-    return line
-
-
-def _format_symbol(sym) -> str:
-    """Format symbol for LLM consumption - concise but complete."""
-    lines = [f"{sym.symbol_type}: {sym.qualified_name}"]
-    if sym.signature:
-        lines.append(f"signature: {sym.signature}")
-    if sym.docstring:
-        # Truncate very long docstrings for context efficiency
-        doc = sym.docstring if len(sym.docstring) <= 1500 else sym.docstring[:1500] + "..."
-        lines.append(f"docstring: {doc}")
-    lines.append(f"location: {sym.file_path}:{sym.line_no}")
-    return "\n".join(lines)
 
 
 @server.list_tools()
@@ -110,7 +79,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="rex_index",
-            description="Build symbol index for .venv packages. Run if search returns empty or after installing new packages.",
+            description="Build symbol index for .venv packages and optionally project source code. Run if search returns empty or after installing new packages. Pass project_dirs to also index project source files for better search coverage.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -118,6 +87,11 @@ async def list_tools() -> list[Tool]:
                         "type": "boolean",
                         "description": "Force rebuild even if up-to-date",
                         "default": False,
+                    },
+                    "project_dirs": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Directories of project source code to index alongside .venv (e.g., ['./src', '.'])",
                     },
                 },
             },
@@ -140,33 +114,23 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text=f"No symbols found for: {query}")]
 
         output = [f"Found {len(results)} results for '{query}':\n"]
-        for i, sym in enumerate(results, 1):
-            short = _short_name(sym.qualified_name)
-            summary = _first_line(sym.docstring)
-            sig = sym.signature or ""
-            if len(sig) > 50:
-                sig = sig[:47] + "..."
-            # Format: numbered, short name + sig, then summary on next line
-            output.append(f"{i}. {short}{sig}  [{sym.symbol_type}]")
-            if summary:
-                output.append(f"   {summary}")
+        for sym in results:
+            output.append(format_symbol_line(sym))
             output.append(f"   → {sym.qualified_name}")
 
         return [TextContent(type="text", text="\n".join(output))]
 
     elif name == "rex_show":
         qname = arguments["name"]
-        symbol = get_symbol(qname)
+        result = show_symbol(qname)
 
-        if symbol is None:
-            # Try fuzzy search
-            results = search(qname, limit=3)
-            if results:
-                suggestions = "\n".join(f"  {r.qualified_name}" for r in results)
+        if isinstance(result, list):
+            if result:
+                suggestions = "\n".join(f"  {qn}" for qn in result)
                 return [TextContent(type="text", text=f"Symbol not found: {qname}\nDid you mean:\n{suggestions}")]
             return [TextContent(type="text", text=f"Symbol not found: {qname}")]
 
-        return [TextContent(type="text", text=_format_symbol(symbol))]
+        return [TextContent(type="text", text=format_symbol_detail(result))]
 
     elif name == "rex_members":
         qname = arguments["name"]
@@ -177,20 +141,22 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
         output = [f"Members of {qname}:\n"]
         for sym in results:
-            sig = sym.signature or ""
-            if len(sig) > 50:
-                sig = sig[:47] + "..."
-            output.append(f"  {sym.symbol_type:8} {sym.name}{sig}")
+            output.append(f"  {format_symbol_line(sym)}")
 
         return [TextContent(type="text", text="\n".join(output))]
 
     elif name == "rex_index":
         force = arguments.get("force", False)
+        raw_dirs = arguments.get("project_dirs")
+        project_dirs = [Path(d).resolve() for d in raw_dirs] if raw_dirs else None
         try:
-            count = build_index(force=force)
+            count = build_index(force=force, project_dirs=project_dirs)
             if count == -1:
                 return [TextContent(type="text", text="Index is up-to-date.")]
-            return [TextContent(type="text", text=f"Indexed {count:,} symbols.")]
+            msg = f"Indexed {count:,} symbols."
+            if project_dirs:
+                msg += f" (including {len(project_dirs)} project dir(s))"
+            return [TextContent(type="text", text=msg)]
         except RuntimeError as e:
             return [TextContent(type="text", text=f"Error: {e}")]
 

@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from .indexer import Symbol, find_site_packages, find_venv, index_venv
+from .indexer import Symbol, find_site_packages, find_venv, index_directory, index_venv
 
 
 def get_db_path(venv: Path) -> Path:
@@ -146,14 +146,25 @@ def insert_symbols(conn: sqlite3.Connection, symbols: Iterator[Symbol]) -> int:
     return count
 
 
-def build_index(venv: Path | None = None, force: bool = False, progress_callback=None) -> int:
-    """Build or rebuild the index for a venv."""
+def _chain_iterators(*iterators):
+    """Chain multiple iterators."""
+    for it in iterators:
+        yield from it
+
+
+def build_index(
+    venv: Path | None = None,
+    force: bool = False,
+    progress_callback=None,
+    project_dirs: list[Path] | None = None,
+) -> int:
+    """Build or rebuild the index for a venv, optionally including project dirs."""
     if venv is None:
         venv = find_venv()
     if venv is None:
         raise RuntimeError("No .venv found")
 
-    if not force and not needs_reindex(venv):
+    if not force and not needs_reindex(venv) and not project_dirs:
         return -1  # Already up to date
 
     db_path = get_db_path(venv)
@@ -164,8 +175,17 @@ def build_index(venv: Path | None = None, force: bool = False, progress_callback
 
     with get_connection(db_path) as conn:
         create_schema(conn)
-        symbols = index_venv(venv, progress_callback)
-        count = insert_symbols(conn, symbols)
+        venv_symbols = index_venv(venv, progress_callback)
+
+        if project_dirs:
+            project_symbols = _chain_iterators(
+                *(index_directory(d) for d in project_dirs)
+            )
+            all_symbols = _chain_iterators(venv_symbols, project_symbols)
+        else:
+            all_symbols = venv_symbols
+
+        count = insert_symbols(conn, all_symbols)
 
     return count
 
@@ -186,10 +206,40 @@ def row_to_symbol(row: sqlite3.Row) -> Symbol:
     )
 
 
+import re
+
+# Characters that are FTS5 operators or cause syntax errors
+_FTS5_SPECIAL = re.compile(r'[+\-@^"(){}:!|&~<>]')
+
+
+def _sanitize_fts_query(query: str) -> str:
+    """Build a safe FTS5 query from user input.
+
+    Strips FTS5 operators, splits underscores, applies prefix matching.
+    Returns empty string if no usable tokens remain.
+    """
+    terms = query.split()
+    fts_parts = []
+    for term in terms:
+        # Remove FTS5 special characters
+        clean = _FTS5_SPECIAL.sub(" ", term)
+        subtokens = clean.replace("_", " ").split()
+        for subtoken in subtokens:
+            subtoken = subtoken.strip()
+            if subtoken:
+                escaped = subtoken.replace('"', '""')
+                fts_parts.append(f"{escaped}*")
+    return " ".join(fts_parts)
+
+
 def search(
     query: str, venv: Path | None = None, limit: int = 50, symbol_type: str | None = None
 ) -> list[Symbol]:
     """Search for symbols matching query."""
+    # Bug fix: empty/blank query should return empty, not random results
+    if not query or not query.strip():
+        return []
+
     if venv is None:
         venv = find_venv()
     if venv is None:
@@ -199,61 +249,54 @@ def search(
     if not db_path.exists():
         return []
 
-    # Handle "Class.method" style queries - search for inherited methods too
+    # Handle "Class.method" style queries — try inheritance search first,
+    # but fall through to normal FTS if it returns nothing
     if "." in query:
         results = _search_with_inheritance(query, venv, limit)
         if results:
             return results
 
     with get_connection(db_path) as conn:
-        # Use FTS5 for search
-        # Split query into terms and create proper FTS query
-        terms = query.split()
+        fts_query = _sanitize_fts_query(query)
 
-        # Build FTS query - avoid phrase matching (quotes) since unicode61
-        # tokenizer splits on underscores, making phrase matches fail for
-        # identifiers like "post_process_instance_segmentation"
-        fts_parts = []
-        for term in terms:
-            # Split underscored terms into individual tokens for better matching
-            subtokens = term.replace("_", " ").split()
-            for subtoken in subtokens:
-                # Use prefix matching without quotes for flexibility
-                escaped = subtoken.replace('"', '""')
-                fts_parts.append(f"{escaped}*")
-        fts_query = " ".join(fts_parts)
+        if fts_query:
+            sql = """
+                SELECT s.*, bm25(symbols_fts) as rank
+                FROM symbols s
+                JOIN symbols_fts ON s.id = symbols_fts.rowid
+                WHERE symbols_fts MATCH ?
+            """
+            params: list = [fts_query]
 
-        sql = """
-            SELECT s.*, bm25(symbols_fts) as rank
-            FROM symbols s
-            JOIN symbols_fts ON s.id = symbols_fts.rowid
-            WHERE symbols_fts MATCH ?
-        """
-        params: list = [fts_query]
-
-        if symbol_type:
-            sql += " AND s.symbol_type = ?"
-            params.append(symbol_type)
-
-        sql += " ORDER BY rank LIMIT ?"
-        params.append(limit)
-
-        try:
-            rows = conn.execute(sql, params).fetchall()
-        except sqlite3.OperationalError:
-            # FTS query failed, fall back to LIKE
-            # For multiple terms, require all to match
-            sql = "SELECT * FROM symbols WHERE 1=1"
-            params = []
-            for term in terms:
-                sql += " AND (name LIKE ? OR qualified_name LIKE ?)"
-                params.extend([f"%{term}%", f"%{term}%"])
             if symbol_type:
-                sql += " AND symbol_type = ?"
+                sql += " AND s.symbol_type = ?"
                 params.append(symbol_type)
-            sql += " LIMIT ?"
+
+            sql += " ORDER BY rank LIMIT ?"
             params.append(limit)
-            rows = conn.execute(sql, params).fetchall()
+
+            try:
+                rows = conn.execute(sql, params).fetchall()
+                return [row_to_symbol(row) for row in rows]
+            except sqlite3.OperationalError:
+                pass  # Fall through to LIKE
+
+        # LIKE fallback — also search docstrings for consistency with FTS
+        terms = query.split()
+        if not terms:
+            return []
+
+        sql = "SELECT * FROM symbols WHERE 1=1"
+        params = []
+        for term in terms:
+            sql += " AND (name LIKE ? OR qualified_name LIKE ? OR docstring LIKE ?)"
+            params.extend([f"%{term}%", f"%{term}%", f"%{term}%"])
+        if symbol_type:
+            sql += " AND symbol_type = ?"
+            params.append(symbol_type)
+        sql += " ORDER BY name LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(sql, params).fetchall()
 
         return [row_to_symbol(row) for row in rows]
 

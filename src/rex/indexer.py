@@ -294,6 +294,41 @@ def index_package(package_name: str, package_path: Path) -> Iterator[Symbol]:
             yield from parse_file(file_path, module_name)
 
 
+def index_directory(directory: Path) -> Iterator[Symbol]:
+    """Index all .py files in a directory tree, yielding symbols.
+
+    Skips __pycache__, hidden dirs (.*), and .venv dirs.
+    """
+    directory = directory.resolve()
+
+    for root, dirs, files in os.walk(directory):
+        root_path = Path(root)
+
+        # Skip hidden, cache, and venv directories
+        dirs[:] = [
+            d for d in dirs
+            if not d.startswith((".", "_")) and d != "__pycache__"
+        ]
+
+        for file in files:
+            if not file.endswith(".py"):
+                continue
+
+            file_path = root_path / file
+            rel_path = file_path.relative_to(directory)
+            parts = list(rel_path.parts)
+
+            if parts[-1] == "__init__.py":
+                parts = parts[:-1]
+                if not parts:
+                    continue
+            else:
+                parts[-1] = parts[-1][:-3]  # Remove .py
+
+            module_name = ".".join(parts)
+            yield from parse_file(file_path, module_name)
+
+
 def index_venv(venv: Path, progress_callback=None) -> Iterator[Symbol]:
     """Index all packages in a venv."""
     site_packages = find_site_packages(venv)
