@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
 
 from .indexer import Symbol
-from .storage import get_symbol, search
+from .storage import get_db_path, get_symbol, search
 
 
 def format_symbol_line(sym: Symbol, sig_max: int = 50) -> str:
@@ -28,15 +29,17 @@ def format_symbol_detail(sym: Symbol) -> str:
     return "\n".join(lines)
 
 
-def show_symbol(name: str, venv: Path | None = None) -> Symbol | list[str]:
+def show_symbol(
+    name: str, db_path_fn: Callable[[], Path] = get_db_path
+) -> Symbol | list[str]:
     """Look up a symbol by exact qualified name.
 
     Returns the Symbol if found, or a list of suggestion qualified names.
     Empty list means nothing found at all.
     """
-    sym = get_symbol(name, venv=venv)
+    sym = get_symbol(name, db_path_fn=db_path_fn)
     if sym is not None:
         return sym
 
-    results = search(name, venv=venv, limit=5)
+    results = search(name, db_path_fn=db_path_fn, limit=5)
     return [r.qualified_name for r in results]

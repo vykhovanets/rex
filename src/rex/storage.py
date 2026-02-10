@@ -2,37 +2,28 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
-from .indexer import Symbol, find_site_packages, find_venv, index_directory, index_venv
+from .indexer import (
+    Symbol,
+    find_site_packages,
+    find_venv,
+    index_directory,
+    index_package,
+    index_site_packages,
+    iter_packages,
+)
 
 
-def get_db_path(venv: Path) -> Path:
-    """Get the database path for a venv."""
-    return venv / ".pydocs.db"
-
-
-def needs_reindex(venv: Path) -> bool:
-    """Check if the index needs to be rebuilt."""
-    db_path = get_db_path(venv)
-    if not db_path.exists():
-        return True
-
-    site_packages = find_site_packages(venv)
-    if site_packages is None:
-        return True
-
-    # Check if any package was modified after the index
-    db_mtime = db_path.stat().st_mtime
-
-    for entry in site_packages.iterdir():
-        if entry.stat().st_mtime > db_mtime:
-            return True
-
-    return False
+def get_db_path() -> Path:
+    """Get the global database path."""
+    state_dir = Path.home() / ".local" / "state" / "rex"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    return state_dir / "rex.db"
 
 
 @contextmanager
@@ -87,6 +78,14 @@ def create_schema(conn: sqlite3.Connection) -> None:
             INSERT INTO symbols_fts(symbols_fts, rowid, name, qualified_name, docstring)
             VALUES ('delete', old.id, old.name, old.qualified_name, old.docstring);
         END;
+
+        -- Packages metadata table
+        CREATE TABLE IF NOT EXISTS packages (
+            name TEXT PRIMARY KEY,
+            source_path TEXT NOT NULL,
+            mtime REAL NOT NULL,
+            symbol_count INTEGER NOT NULL DEFAULT 0
+        );
 
         -- Index for common queries
         CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
@@ -146,48 +145,146 @@ def insert_symbols(conn: sqlite3.Connection, symbols: Iterator[Symbol]) -> int:
     return count
 
 
-def _chain_iterators(*iterators):
-    """Chain multiple iterators."""
-    for it in iterators:
-        yield from it
-
-
 def build_index(
     venv: Path | None = None,
     force: bool = False,
     progress_callback=None,
     project_dirs: list[Path] | None = None,
+    db_path_fn: Callable[[], Path] = get_db_path,
 ) -> int:
-    """Build or rebuild the index for a venv, optionally including project dirs."""
+    """Build or rebuild the index incrementally."""
     if venv is None:
         venv = find_venv()
     if venv is None:
         raise RuntimeError("No .venv found")
 
-    if not force and not needs_reindex(venv) and not project_dirs:
-        return -1  # Already up to date
-
-    db_path = get_db_path(venv)
-
-    # Remove old database
-    if db_path.exists():
-        db_path.unlink()
+    db_path = db_path_fn()
+    site_packages = find_site_packages(venv)
+    if site_packages is None:
+        raise RuntimeError(f"No site-packages found in {venv}")
 
     with get_connection(db_path) as conn:
         create_schema(conn)
-        venv_symbols = index_venv(venv, progress_callback)
 
-        if project_dirs:
-            project_symbols = _chain_iterators(
-                *(index_directory(d) for d in project_dirs)
+        packages = list(iter_packages(site_packages))
+        total_new = 0
+        updated_packages = 0
+
+        for i, (pkg_name, pkg_path) in enumerate(packages):
+            if progress_callback:
+                progress_callback(pkg_name, i + 1, len(packages))
+
+            current_mtime = pkg_path.stat().st_mtime
+
+            if not force:
+                row = conn.execute(
+                    "SELECT mtime FROM packages WHERE name = ?",
+                    (pkg_name,),
+                ).fetchone()
+                if row and row["mtime"] == current_mtime:
+                    continue  # up to date
+
+            # Delete old symbols for this package
+            conn.execute(
+                "DELETE FROM symbols WHERE qualified_name LIKE ? OR qualified_name = ?",
+                (f"{pkg_name}.%", pkg_name),
             )
-            all_symbols = _chain_iterators(venv_symbols, project_symbols)
-        else:
-            all_symbols = venv_symbols
 
-        count = insert_symbols(conn, all_symbols)
+            # Index and insert new symbols
+            symbols = list(index_package(pkg_name, pkg_path))
+            count = insert_symbols(conn, iter(symbols))
 
-    return count
+            # Upsert packages metadata
+            conn.execute(
+                "INSERT OR REPLACE INTO packages (name, source_path, mtime, symbol_count) VALUES (?, ?, ?, ?)",
+                (pkg_name, str(pkg_path), current_mtime, count),
+            )
+            conn.commit()
+            total_new += count
+            updated_packages += 1
+
+        # Handle project dirs
+        if project_dirs:
+            for proj_dir in project_dirs:
+                proj_dir = proj_dir.resolve()
+                source_key = f"project:{proj_dir}"
+                current_mtime = proj_dir.stat().st_mtime
+
+                if not force:
+                    row = conn.execute(
+                        "SELECT mtime FROM packages WHERE source_path = ?",
+                        (source_key,),
+                    ).fetchone()
+                    if row and row["mtime"] == current_mtime:
+                        continue
+
+                # Delete old project symbols
+                old_pkgs = conn.execute(
+                    "SELECT name FROM packages WHERE source_path = ?",
+                    (source_key,),
+                ).fetchall()
+                for old_pkg in old_pkgs:
+                    conn.execute(
+                        "DELETE FROM symbols WHERE qualified_name LIKE ? OR qualified_name = ?",
+                        (f"{old_pkg['name']}.%", old_pkg['name']),
+                    )
+                conn.execute(
+                    "DELETE FROM packages WHERE source_path = ?", (source_key,)
+                )
+
+                symbols = list(index_directory(proj_dir))
+                count = insert_symbols(conn, iter(symbols))
+
+                conn.execute(
+                    "INSERT OR REPLACE INTO packages (name, source_path, mtime, symbol_count) VALUES (?, ?, ?, ?)",
+                    (f"project:{proj_dir.name}", source_key, current_mtime, count),
+                )
+                conn.commit()
+                total_new += count
+                updated_packages += 1
+
+    if updated_packages == 0 and not force:
+        return -1
+    return total_new
+
+
+def clean_index(db_path_fn: Callable[[], Path] = get_db_path) -> list[str]:
+    """Remove packages whose source paths no longer exist."""
+    db_path = db_path_fn()
+    if not db_path.exists():
+        return []
+
+    removed = []
+    with get_connection(db_path) as conn:
+        rows = conn.execute("SELECT name, source_path FROM packages").fetchall()
+        for row in rows:
+            # For project dirs, source_path starts with "project:"
+            if row["source_path"].startswith("project:"):
+                check_path = Path(row["source_path"][len("project:"):])
+            else:
+                check_path = Path(row["source_path"])
+
+            if not check_path.exists():
+                pkg_name = row["name"]
+                conn.execute(
+                    "DELETE FROM symbols WHERE qualified_name LIKE ? OR qualified_name = ?",
+                    (f"{pkg_name}.%", pkg_name),
+                )
+                conn.execute("DELETE FROM packages WHERE name = ?", (pkg_name,))
+                removed.append(pkg_name)
+
+        if removed:
+            conn.commit()
+
+    return removed
+
+
+def ensure_db(db_path_fn: Callable[[], Path] = get_db_path) -> Path:
+    """Return DB path, building index if DB doesn't exist yet."""
+    db_path = db_path_fn()
+    if not db_path.exists():
+        build_index(db_path_fn=db_path_fn)
+    return db_path
 
 
 def row_to_symbol(row: sqlite3.Row) -> Symbol:
@@ -205,8 +302,6 @@ def row_to_symbol(row: sqlite3.Row) -> Symbol:
         return_annotation=row["return_annotation"],
     )
 
-
-import re
 
 # Characters that are FTS5 operators or cause syntax errors
 _FTS5_SPECIAL = re.compile(r'[+\-@^"(){}:!|&~<>]')
@@ -233,26 +328,21 @@ def _sanitize_fts_query(query: str) -> str:
 
 
 def search(
-    query: str, venv: Path | None = None, limit: int = 50, symbol_type: str | None = None
+    query: str,
+    limit: int = 50,
+    symbol_type: str | None = None,
+    db_path_fn: Callable[[], Path] = get_db_path,
 ) -> list[Symbol]:
     """Search for symbols matching query."""
-    # Bug fix: empty/blank query should return empty, not random results
     if not query or not query.strip():
         return []
 
-    if venv is None:
-        venv = find_venv()
-    if venv is None:
-        return []
-
-    db_path = get_db_path(venv)
-    if not db_path.exists():
-        return []
+    db_path = ensure_db(db_path_fn)
 
     # Handle "Class.method" style queries — try inheritance search first,
     # but fall through to normal FTS if it returns nothing
     if "." in query:
-        results = _search_with_inheritance(query, venv, limit)
+        results = _search_with_inheritance(query, db_path, limit)
         if results:
             return results
 
@@ -301,7 +391,7 @@ def search(
         return [row_to_symbol(row) for row in rows]
 
 
-def _search_with_inheritance(query: str, venv: Path, limit: int) -> list[Symbol]:
+def _search_with_inheritance(query: str, db_path: Path, limit: int) -> list[Symbol]:
     """Search with inheritance awareness for 'Class.method' patterns."""
     parts = query.rsplit(".", 1)
     if len(parts) != 2:
@@ -310,7 +400,6 @@ def _search_with_inheritance(query: str, venv: Path, limit: int) -> list[Symbol]
     class_part, method_part = parts
     class_name = class_part.split(".")[-1]  # Get just the class name
 
-    db_path = get_db_path(venv)
     results = []
 
     with get_connection(db_path) as conn:
@@ -367,16 +456,12 @@ def _search_with_inheritance(query: str, venv: Path, limit: int) -> list[Symbol]
     return results[:limit]
 
 
-def get_symbol(qualified_name: str, venv: Path | None = None) -> Symbol | None:
+def get_symbol(
+    qualified_name: str,
+    db_path_fn: Callable[[], Path] = get_db_path,
+) -> Symbol | None:
     """Get a symbol by its qualified name."""
-    if venv is None:
-        venv = find_venv()
-    if venv is None:
-        return None
-
-    db_path = get_db_path(venv)
-    if not db_path.exists():
-        return None
+    db_path = ensure_db(db_path_fn)
 
     with get_connection(db_path) as conn:
         row = conn.execute(
@@ -387,16 +472,12 @@ def get_symbol(qualified_name: str, venv: Path | None = None) -> Symbol | None:
     return None
 
 
-def get_members(qualified_name: str, venv: Path | None = None) -> list[Symbol]:
+def get_members(
+    qualified_name: str,
+    db_path_fn: Callable[[], Path] = get_db_path,
+) -> list[Symbol]:
     """Get members of a class or module."""
-    if venv is None:
-        venv = find_venv()
-    if venv is None:
-        return []
-
-    db_path = get_db_path(venv)
-    if not db_path.exists():
-        return []
+    db_path = ensure_db(db_path_fn)
 
     with get_connection(db_path) as conn:
         # Find symbols that start with this qualified name
@@ -413,16 +494,11 @@ def get_members(qualified_name: str, venv: Path | None = None) -> list[Symbol]:
         return [row_to_symbol(row) for row in rows]
 
 
-def get_stats(venv: Path | None = None) -> dict:
+def get_stats(db_path_fn: Callable[[], Path] = get_db_path) -> dict:
     """Get index statistics."""
-    if venv is None:
-        venv = find_venv()
-    if venv is None:
-        return {"error": "No venv found"}
-
-    db_path = get_db_path(venv)
+    db_path = db_path_fn()
     if not db_path.exists():
-        return {"error": "No index found", "venv": str(venv)}
+        return {"error": "No index found. Run 'rex index' first."}
 
     with get_connection(db_path) as conn:
         total = conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
@@ -431,15 +507,9 @@ def get_stats(venv: Path | None = None) -> dict:
                 "SELECT symbol_type, COUNT(*) FROM symbols GROUP BY symbol_type"
             ).fetchall()
         )
-        packages = conn.execute(
-            """
-            SELECT COUNT(DISTINCT substr(qualified_name, 1, instr(qualified_name, '.') - 1))
-            FROM symbols
-        """
-        ).fetchone()[0]
+        packages = conn.execute("SELECT COUNT(*) FROM packages").fetchone()[0]
 
     return {
-        "venv": str(venv),
         "db_path": str(db_path),
         "total_symbols": total,
         "by_type": by_type,

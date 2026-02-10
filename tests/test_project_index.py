@@ -102,18 +102,18 @@ def sample_project(tmp_path):
 
 
 @pytest.fixture(scope="session")
+def db_path_fn(tmp_path_factory):
+    """DI function returning a temp DB path for test isolation."""
+    db = tmp_path_factory.mktemp("rex") / "test.db"
+    return lambda: db
+
+
+@pytest.fixture(scope="session")
 def venv():
     """Locate the project .venv."""
     v = find_venv(PROJECT_DIR)
     assert v is not None, ".venv not found for project"
     return v
-
-
-@pytest.fixture(scope="session")
-def ensure_index(venv):
-    """Ensure the venv index is built before tests run."""
-    build_index(venv)
-    return venv
 
 
 # ---------------------------------------------------------------------------
@@ -198,23 +198,27 @@ class TestBuildIndexWithProjectDirs:
     """Test that build_index accepts project_dirs and indexes them."""
 
 
-    def test_project_symbols_appear_in_search(self, sample_project, venv):
-        build_index(venv, force=True, project_dirs=[sample_project])
+    def test_project_symbols_appear_in_search(self, sample_project, venv, tmp_path):
+        db = tmp_path / "proj_test.db"
+        db_fn = lambda: db
+        build_index(venv, force=True, project_dirs=[sample_project], db_path_fn=db_fn)
 
-        results = search("UserModel", venv=venv)
+        results = search("UserModel", db_path_fn=db_fn)
         names = [s.name for s in results]
         assert "UserModel" in names
 
 
-    def test_project_and_venv_symbols_coexist(self, sample_project, venv):
-        build_index(venv, force=True, project_dirs=[sample_project])
+    def test_project_and_venv_symbols_coexist(self, sample_project, venv, tmp_path):
+        db = tmp_path / "coexist_test.db"
+        db_fn = lambda: db
+        build_index(venv, force=True, project_dirs=[sample_project], db_path_fn=db_fn)
 
         # Project symbol
-        proj_results = search("UserModel", venv=venv)
+        proj_results = search("UserModel", db_path_fn=db_fn)
         assert len(proj_results) > 0
 
         # Venv symbol (typer is installed in the venv)
-        venv_results = search("Typer", venv=venv)
+        venv_results = search("Typer", db_path_fn=db_fn)
         assert len(venv_results) > 0
 
 
@@ -239,9 +243,11 @@ class TestSearchFindsProjectSymbols:
             ''',
         )
 
-        build_index(venv, force=True, project_dirs=[tmp_path])
+        db = tmp_path / "unique_class.db"
+        db_fn = lambda: db
+        build_index(venv, force=True, project_dirs=[tmp_path], db_path_fn=db_fn)
 
-        results = search("UniqueTestClassXyz123", venv=venv)
+        results = search("UniqueTestClassXyz123", db_path_fn=db_fn)
         assert len(results) > 0
         assert any(s.name == "UniqueTestClassXyz123" for s in results)
 
@@ -256,9 +262,11 @@ class TestSearchFindsProjectSymbols:
             ''',
         )
 
-        build_index(venv, force=True, project_dirs=[tmp_path])
+        db = tmp_path / "unique_func.db"
+        db_fn = lambda: db
+        build_index(venv, force=True, project_dirs=[tmp_path], db_path_fn=db_fn)
 
-        results = search("standalone_unique_func_qrs456", venv=venv)
+        results = search("standalone_unique_func_qrs456", db_path_fn=db_fn)
         assert len(results) > 0
         assert any(s.name == "standalone_unique_func_qrs456" for s in results)
 
@@ -273,8 +281,10 @@ class TestSearchFindsProjectSymbols:
             ''',
         )
 
-        build_index(venv, force=True, project_dirs=[tmp_path])
+        db = tmp_path / "unique_method.db"
+        db_fn = lambda: db
+        build_index(venv, force=True, project_dirs=[tmp_path], db_path_fn=db_fn)
 
-        results = search("unique_method_holder_xyz", venv=venv)
+        results = search("unique_method_holder_xyz", db_path_fn=db_fn)
         assert len(results) > 0
         assert any(s.name == "unique_method_holder_xyz" for s in results)

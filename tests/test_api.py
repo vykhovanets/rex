@@ -1,34 +1,41 @@
-"""Tests for rex.api — the shared formatting/lookup layer.
+"""Tests for rex.api -- the shared formatting/lookup layer.
 
 These define the expected interface that both CLI and MCP should use,
 eliminating duplicated formatting logic.
-
-Since rex.api doesn't exist yet, all tests are marked xfail.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from rex.indexer import Symbol
+from rex.api import format_symbol_detail, format_symbol_line, show_symbol
 
-# We expect rex.api to provide these three functions.
-# Since the module doesn't exist yet, gate the import behind xfail.
-try:
-    from rex.api import format_symbol_detail, format_symbol_line, show_symbol
 
-    _API_AVAILABLE = True
-except ImportError:
-    _API_AVAILABLE = False
-    format_symbol_line = None  # type: ignore[assignment]
-    format_symbol_detail = None  # type: ignore[assignment]
-    show_symbol = None  # type: ignore[assignment]
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 
-pytestmark = pytest.mark.xfail(
-    not _API_AVAILABLE,
-    reason="rex.api not implemented yet",
-    raises=(TypeError, AttributeError, NameError),
-)
+
+@pytest.fixture(scope="session")
+def db_path_fn(tmp_path_factory):
+    """DI function returning a temp DB path for test isolation."""
+    db = tmp_path_factory.mktemp("rex") / "test.db"
+    return lambda: db
+
+
+@pytest.fixture(scope="session")
+def indexed_db(db_path_fn):
+    """Build index into temp DB, return the db_path_fn."""
+    from rex.indexer import find_venv
+    from rex.storage import build_index
+
+    venv = find_venv(Path("/Users/avykhova/Code/karb/rex"))
+    assert venv is not None, ".venv not found"
+    build_index(venv, db_path_fn=db_path_fn)
+    return db_path_fn
 
 
 # ---------------------------------------------------------------------------
@@ -198,59 +205,34 @@ class TestFormatSymbolDetail:
 
 
 class TestShowSymbol:
-    """show_symbol(name, venv) -> Symbol | list[str]
+    """show_symbol(name, db_path_fn) -> Symbol | list[str]
 
     Exact lookup by qualified name. If not found, falls back to fuzzy
     search and returns a list of suggestion strings ("did you mean").
     """
 
-    def test_exact_match_returns_symbol(self, ensure_index):
+    def test_exact_match_returns_symbol(self, indexed_db):
         # Find a real qualified name via storage layer
         from rex.storage import search as raw_search
 
-        hits = raw_search("Symbol", venv=ensure_index, limit=1)
+        hits = raw_search("Symbol", db_path_fn=indexed_db, limit=1)
         if not hits:
-            pytest.skip("No symbols indexed — cannot test exact match")
+            pytest.skip("No symbols indexed -- cannot test exact match")
         qn = hits[0].qualified_name
 
-        result = show_symbol(qn, venv=ensure_index)
+        result = show_symbol(qn, db_path_fn=indexed_db)
         assert isinstance(result, Symbol)
         assert result.qualified_name == qn
 
-    def test_nonexistent_returns_suggestions(self, ensure_index):
+    def test_nonexistent_returns_suggestions(self, indexed_db):
         # Not an exact qualified name, but a valid prefix that FTS can match
-        result = show_symbol("BaseMod", venv=ensure_index)
+        result = show_symbol("BaseMod", db_path_fn=indexed_db)
         assert isinstance(result, list)
         assert len(result) > 0
         for s in result:
             assert isinstance(s, str)
 
-    def test_completely_unknown_returns_empty_list(self, ensure_index):
-        result = show_symbol("zzz_nonexistent_xyz.does.not.exist", venv=ensure_index)
+    def test_completely_unknown_returns_empty_list(self, indexed_db):
+        result = show_symbol("zzz_nonexistent_xyz.does.not.exist", db_path_fn=indexed_db)
         assert isinstance(result, list)
         assert len(result) == 0
-
-
-# ---------------------------------------------------------------------------
-# Fixtures (reuse from test_core)
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="session")
-def venv():
-    from rex.indexer import find_venv
-
-    v = find_venv(Path("/Users/avykhova/Code/karb/rex"))
-    assert v is not None, ".venv not found"
-    return v
-
-
-@pytest.fixture(scope="session")
-def ensure_index(venv):
-    from rex.storage import build_index
-
-    build_index(venv)
-    return venv
-
-
-from pathlib import Path

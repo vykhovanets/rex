@@ -220,6 +220,10 @@ def find_venv(start_dir: Path | None = None) -> Path | None:
         if venv.is_dir():
             return venv
         current = current.parent
+    # Fallback: check home directory
+    home_venv = Path.home() / ".venv"
+    if home_venv.is_dir():
+        return home_venv
     return None
 
 
@@ -329,15 +333,18 @@ def index_directory(directory: Path) -> Iterator[Symbol]:
             yield from parse_file(file_path, module_name)
 
 
+def index_site_packages(site_packages: Path, progress_callback=None) -> Iterator[Symbol]:
+    """Index all packages in a site-packages directory."""
+    packages = list(iter_packages(site_packages))
+    for i, (pkg_name, pkg_path) in enumerate(packages):
+        if progress_callback:
+            progress_callback(pkg_name, i + 1, len(packages))
+        yield from index_package(pkg_name, pkg_path)
+
+
 def index_venv(venv: Path, progress_callback=None) -> Iterator[Symbol]:
     """Index all packages in a venv."""
     site_packages = find_site_packages(venv)
     if site_packages is None:
         return
-
-    packages = list(iter_packages(site_packages))
-
-    for i, (pkg_name, pkg_path) in enumerate(packages):
-        if progress_callback:
-            progress_callback(pkg_name, i + 1, len(packages))
-        yield from index_package(pkg_name, pkg_path)
+    yield from index_site_packages(site_packages, progress_callback)

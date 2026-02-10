@@ -7,8 +7,7 @@ from pathlib import Path
 import typer
 
 from .api import format_symbol_detail, format_symbol_line, show_symbol
-from .indexer import find_venv
-from .storage import build_index, get_members, get_stats, search
+from .storage import build_index, clean_index, get_members, get_stats, search
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 
@@ -24,23 +23,17 @@ def index(
     force: bool = typer.Option(False, "-f", "--force", help="Force reindex"),
     project: list[Path] = typer.Option([], "-p", "--project", help="Project dirs to index alongside .venv"),
 ) -> None:
-    """Build or rebuild the symbol index for .venv (and optionally project dirs)."""
-    venv = find_venv()
-    if venv is None:
-        typer.echo("Error: No .venv found in current directory or parents", err=True)
-        raise typer.Exit(1)
-
-    typer.echo(f"Indexing: {venv}")
-    if project:
-        for p in project:
-            typer.echo(f"  + project: {p.resolve()}")
-
+    """Build or rebuild the symbol index."""
     def progress(pkg: str, current: int, total: int) -> None:
         typer.echo(f"  [{current}/{total}] {pkg}", nl=False)
         typer.echo("\r", nl=False)
 
     project_dirs = [p.resolve() for p in project] if project else None
-    count = build_index(venv, force=force, progress_callback=progress, project_dirs=project_dirs)
+    try:
+        count = build_index(force=force, progress_callback=progress, project_dirs=project_dirs)
+    except RuntimeError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
 
     if count == -1:
         typer.echo("Index is up to date (use -f to force rebuild)")
@@ -56,7 +49,11 @@ def find(
 ) -> None:
     """Search for symbols matching query."""
     query_str = " ".join(query)
-    results = search(query_str, limit=limit, symbol_type=type_filter)
+    try:
+        results = search(query_str, limit=limit, symbol_type=type_filter)
+    except RuntimeError as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
 
     if not results:
         typer.echo(f"No symbols found matching: {query_str}")
@@ -112,17 +109,26 @@ def stats() -> None:
 
     if "error" in info:
         typer.echo(f"Error: {info['error']}", err=True)
-        if "venv" in info:
-            typer.echo(f"  venv: {info['venv']}")
-            typer.echo("  Run 'rex index' to build the index")
         raise typer.Exit(1)
 
-    typer.echo(f"venv: {info['venv']}")
+    typer.echo(f"DB: {info['db_path']}")
     typer.echo(f"Symbols: {info['total_symbols']:,}")
     typer.echo(f"Packages: {info['packages']}")
     typer.echo("By type:")
     for stype, count in sorted(info["by_type"].items()):
         typer.echo(f"  {stype}: {count:,}")
+
+
+@app.command()
+def clean() -> None:
+    """Remove packages whose source paths no longer exist."""
+    removed = clean_index()
+    if removed:
+        for name in removed:
+            typer.echo(f"  Removed: {name}")
+        typer.echo(f"Cleaned {len(removed)} stale packages")
+    else:
+        typer.echo("No stale packages found")
 
 
 def main() -> None:

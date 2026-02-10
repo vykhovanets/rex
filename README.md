@@ -31,15 +31,26 @@ claude mcp add rex -- \
   uvx --from git+https://github.com/vykhovanets/rex.git rex-mcp serve
 ```
 
+## How it works
+
+Rex stores a single global index at
+`~/.local/state/rex/rex.db`. Indexing is **incremental** —
+only packages whose files changed since the last run are
+re-indexed. First run takes ~30s; subsequent runs are
+instant.
+
 ## CLI
 
 ```bash
-rex find <query>       # Search symbols (unquoted multi-word OK)
-rex show <name>        # Full documentation by qualified name
+rex find <query>       # Search symbols (unquoted OK)
+rex find -t class Base # Filter by type
+rex show <name>        # Full docs by qualified name
 rex members <name>     # List class/module members
 rex stats              # Index statistics
-rex index              # Rebuild index
-rex index -p .         # Rebuild including project source
+rex index              # Build/update index
+rex index -f           # Force full rebuild
+rex index -p ./src     # Also index project source
+rex clean              # Remove stale packages
 ```
 
 ## MCP Tools
@@ -47,12 +58,14 @@ rex index -p .         # Rebuild including project source
 Claude Code can use rex too — same speed, no
 round-trips to the web.
 
-| Tool | Description |
-|--------------|--------------------------------------|
-| `rex_search` | Find symbols by name |
-| `rex_show` | Get full docs for a symbol |
-| `rex_members`| List class/module members |
-| `rex_index` | Rebuild index (supports project_dirs)|
+| Tool          | Description                       |
+|---------------|-----------------------------------|
+| `rex_find`    | Search symbols (+ type filter)    |
+| `rex_show`    | Full docs for a symbol            |
+| `rex_members` | List class/module members         |
+| `rex_index`   | Build/update index                |
+| `rex_stats`   | Index statistics                  |
+| `rex_clean`   | Remove stale packages             |
 
 ![example](./example.jpg)
 
