@@ -8,6 +8,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Iterator
 
+from rapidfuzz import fuzz, process
+
 from .indexer import (
     Symbol,
     find_site_packages,
@@ -16,6 +18,7 @@ from .indexer import (
     index_package,
     index_site_packages,
     iter_packages,
+    iter_py_files,
 )
 
 
@@ -145,6 +148,48 @@ def insert_symbols(conn: sqlite3.Connection, symbols: Iterator[Symbol]) -> int:
     return count
 
 
+def _package_mtime(pkg_path: Path) -> float:
+    """Effective mtime: max of directory and __init__.py.
+
+    Directory mtime changes when files are added/removed.
+    __init__.py mtime changes when contents are modified.
+    Together they catch both cases.
+    """
+    mtime = pkg_path.stat().st_mtime
+    init_file = pkg_path / "__init__.py"
+    if init_file.exists():
+        mtime = max(mtime, init_file.stat().st_mtime)
+    return mtime
+
+
+def _project_mtime(proj_dir: Path) -> float:
+    """Max mtime across all .py files in a project directory tree.
+
+    Uses iter_py_files() — same walk as index_directory().
+    O(n) in file count — acceptable since this only runs in Phase 3.
+    """
+    max_mtime = proj_dir.stat().st_mtime
+    for py_file in iter_py_files(proj_dir):
+        mt = py_file.stat().st_mtime
+        if mt > max_mtime:
+            max_mtime = mt
+    return max_mtime
+
+
+def _is_package_stale(
+    conn: sqlite3.Connection,
+    pkg_name: str,
+    pkg_path: Path,
+) -> bool:
+    """Check if a single package needs reindexing (mtime changed or new)."""
+    current_mtime = _package_mtime(pkg_path)
+    row = conn.execute(
+        "SELECT mtime FROM packages WHERE name = ?",
+        (pkg_name,),
+    ).fetchone()
+    return not row or row["mtime"] != current_mtime
+
+
 def build_index(
     venv: Path | None = None,
     force: bool = False,
@@ -174,15 +219,10 @@ def build_index(
             if progress_callback:
                 progress_callback(pkg_name, i + 1, len(packages))
 
-            current_mtime = pkg_path.stat().st_mtime
+            if not force and not _is_package_stale(conn, pkg_name, pkg_path):
+                continue  # up to date
 
-            if not force:
-                row = conn.execute(
-                    "SELECT mtime FROM packages WHERE name = ?",
-                    (pkg_name,),
-                ).fetchone()
-                if row and row["mtime"] == current_mtime:
-                    continue  # up to date
+            current_mtime = _package_mtime(pkg_path)
 
             # Delete old symbols for this package
             conn.execute(
@@ -208,7 +248,7 @@ def build_index(
             for proj_dir in project_dirs:
                 proj_dir = proj_dir.resolve()
                 source_key = f"project:{proj_dir}"
-                current_mtime = proj_dir.stat().st_mtime
+                current_mtime = _project_mtime(proj_dir)
 
                 if not force:
                     row = conn.execute(
@@ -248,6 +288,93 @@ def build_index(
     return total_new
 
 
+def is_index_stale(
+    venv: Path | None = None,
+    db_path_fn: Callable[[], Path] = get_db_path,
+) -> bool:
+    """Fast read-only check: is the index out of date?
+
+    Compares package mtimes in the DB against what's on disk.
+    Returns True if reindexing is needed (new/changed packages, or no DB).
+    """
+    db_path = db_path_fn()
+    if not db_path.exists():
+        return True
+
+    if venv is None:
+        venv = find_venv()
+    if venv is None:
+        return False
+
+    site_packages = find_site_packages(venv)
+    if site_packages is None:
+        return False
+
+    with get_connection(db_path) as conn:
+        # Check each on-disk package against the DB
+        disk_names: set[str] = set()
+        for pkg_name, pkg_path in iter_packages(site_packages):
+            disk_names.add(pkg_name)
+            if _is_package_stale(conn, pkg_name, pkg_path):
+                return True
+
+        # Check if DB has venv packages that are no longer on disk
+        db_rows = conn.execute(
+            "SELECT name FROM packages WHERE source_path NOT LIKE 'project:%'"
+        ).fetchall()
+        for row in db_rows:
+            if row["name"] not in disk_names:
+                return True
+
+        # Check project dirs: compare stored mtime against current tree mtime
+        proj_rows = conn.execute(
+            "SELECT source_path, mtime FROM packages "
+            "WHERE source_path LIKE 'project:%'"
+        ).fetchall()
+        for row in proj_rows:
+            proj_path = Path(row["source_path"].removeprefix("project:"))
+            if not proj_path.is_dir():
+                return True  # project dir removed
+            if _project_mtime(proj_path) != row["mtime"]:
+                return True
+
+    return False
+
+
+def _infer_venv(conn: sqlite3.Connection) -> Path | None:
+    """Infer venv path from stored package source paths."""
+    row = conn.execute(
+        "SELECT source_path FROM packages "
+        "WHERE source_path NOT LIKE 'project:%' LIMIT 1"
+    ).fetchone()
+    if not row:
+        return None
+    # source_path = /path/.venv/lib/python3.14/site-packages/pkg
+    # Walk up to find "site-packages", then go up 3 levels to venv
+    path = Path(row["source_path"])
+    for parent in path.parents:
+        if parent.name == "site-packages":
+            return parent.parent.parent.parent
+    return None
+
+
+def _infer_project_dirs(conn: sqlite3.Connection) -> list[Path]:
+    """Recover project directory paths from DB.
+
+    build_index() stores source_path = "project:/abs/path" for project dirs.
+    """
+    rows = conn.execute(
+        "SELECT DISTINCT source_path FROM packages "
+        "WHERE source_path LIKE 'project:%'"
+    ).fetchall()
+    dirs = []
+    for row in rows:
+        path = Path(row["source_path"].removeprefix("project:"))
+        if path.is_dir():
+            dirs.append(path)
+    return dirs
+
+
 def clean_index(db_path_fn: Callable[[], Path] = get_db_path) -> list[str]:
     """Remove packages whose source paths no longer exist."""
     db_path = db_path_fn()
@@ -285,6 +412,50 @@ def ensure_db(db_path_fn: Callable[[], Path] = get_db_path) -> Path:
     if not db_path.exists():
         build_index(db_path_fn=db_path_fn)
     return db_path
+
+
+def _fuzzy_search(
+    query: str,
+    conn: sqlite3.Connection,
+    limit: int,
+    symbol_type: str | None = None,
+    exclude: set[str] | None = None,
+) -> list[Symbol]:
+    """Phase 2: fuzzy match against symbol names using rapidfuzz."""
+    sql = "SELECT DISTINCT name FROM symbols"
+    params: list = []
+    if symbol_type:
+        sql += " WHERE symbol_type = ?"
+        params.append(symbol_type)
+    candidates = [row["name"] for row in conn.execute(sql, params).fetchall()]
+    if not candidates:
+        return []
+
+    matches = process.extract(
+        query, candidates, scorer=fuzz.ratio, score_cutoff=60, limit=limit
+    )
+    if not matches:
+        return []
+
+    exclude = exclude or set()
+    results: list[Symbol] = []
+    for matched_name, _score, _idx in matches:
+        # Fetch full Symbol records for this name
+        fetch_sql = "SELECT * FROM symbols WHERE name = ?"
+        fetch_params: list = [matched_name]
+        if symbol_type:
+            fetch_sql += " AND symbol_type = ?"
+            fetch_params.append(symbol_type)
+        fetch_sql += " LIMIT ?"
+        fetch_params.append(limit - len(results))
+        rows = conn.execute(fetch_sql, fetch_params).fetchall()
+        for row in rows:
+            sym = row_to_symbol(row)
+            if sym.qualified_name not in exclude:
+                results.append(sym)
+            if len(results) >= limit:
+                return results
+    return results
 
 
 def row_to_symbol(row: sqlite3.Row) -> Symbol:
@@ -327,27 +498,16 @@ def _sanitize_fts_query(query: str) -> str:
     return " ".join(fts_parts)
 
 
-def search(
+def _search_core(
     query: str,
-    limit: int = 50,
-    symbol_type: str | None = None,
-    db_path_fn: Callable[[], Path] = get_db_path,
+    limit: int,
+    symbol_type: str | None,
+    db_path: Path,
 ) -> list[Symbol]:
-    """Search for symbols matching query."""
-    if not query or not query.strip():
-        return []
-
-    db_path = ensure_db(db_path_fn)
-
-    # Handle "Class.method" style queries — try inheritance search first,
-    # but fall through to normal FTS if it returns nothing
-    if "." in query:
-        results = _search_with_inheritance(query, db_path, limit)
-        if results:
-            return results
-
+    """Phase 1 (FTS5 + LIKE) + Phase 2 (fuzzy). No reindexing."""
     with get_connection(db_path) as conn:
         fts_query = _sanitize_fts_query(query)
+        fts_results: list[Symbol] = []
 
         if fts_query:
             sql = """
@@ -367,28 +527,69 @@ def search(
 
             try:
                 rows = conn.execute(sql, params).fetchall()
-                return [row_to_symbol(row) for row in rows]
+                fts_results = [row_to_symbol(row) for row in rows]
             except sqlite3.OperationalError:
                 pass  # Fall through to LIKE
 
-        # LIKE fallback — also search docstrings for consistency with FTS
-        terms = query.split()
-        if not terms:
-            return []
+        # LIKE fallback if FTS5 returned nothing
+        if not fts_results:
+            terms = query.split()
+            if terms:
+                sql = "SELECT * FROM symbols WHERE 1=1"
+                params = []
+                for term in terms:
+                    sql += " AND (name LIKE ? OR qualified_name LIKE ? OR docstring LIKE ?)"
+                    params.extend([f"%{term}%", f"%{term}%", f"%{term}%"])
+                if symbol_type:
+                    sql += " AND symbol_type = ?"
+                    params.append(symbol_type)
+                sql += " ORDER BY name LIMIT ?"
+                params.append(limit)
+                rows = conn.execute(sql, params).fetchall()
+                fts_results = [row_to_symbol(row) for row in rows]
 
-        sql = "SELECT * FROM symbols WHERE 1=1"
-        params = []
-        for term in terms:
-            sql += " AND (name LIKE ? OR qualified_name LIKE ? OR docstring LIKE ?)"
-            params.extend([f"%{term}%", f"%{term}%", f"%{term}%"])
-        if symbol_type:
-            sql += " AND symbol_type = ?"
-            params.append(symbol_type)
-        sql += " ORDER BY name LIMIT ?"
-        params.append(limit)
-        rows = conn.execute(sql, params).fetchall()
+        if len(fts_results) >= limit:
+            return fts_results
 
-        return [row_to_symbol(row) for row in rows]
+        # Phase 2: fuzzy fallback
+        remaining = limit - len(fts_results)
+        seen = {r.qualified_name for r in fts_results}
+        fuzzy_results = _fuzzy_search(query, conn, remaining, symbol_type, seen)
+        return fts_results + fuzzy_results
+
+
+def search(
+    query: str,
+    limit: int = 50,
+    symbol_type: str | None = None,
+    db_path_fn: Callable[[], Path] = get_db_path,
+) -> list[Symbol]:
+    """Three-phase search: FTS5 -> fuzzy -> auto-reindex."""
+    if not query or not query.strip():
+        return []
+
+    db_path = ensure_db(db_path_fn)
+
+    # Handle "Class.method" style queries — try inheritance search first,
+    # but fall through to normal search if it returns nothing
+    if "." in query:
+        results = _search_with_inheritance(query, db_path, limit)
+        if results:
+            return results
+
+    results = _search_core(query, limit, symbol_type, db_path)
+    if results:
+        return results
+
+    # Phase 3: auto-reindex if stale
+    with get_connection(db_path) as conn:
+        venv = _infer_venv(conn)
+        project_dirs = _infer_project_dirs(conn)
+    if venv and is_index_stale(venv, db_path_fn=db_path_fn):
+        build_index(venv, project_dirs=project_dirs or None, db_path_fn=db_path_fn)
+        return _search_core(query, limit, symbol_type, db_path)
+
+    return []
 
 
 def _search_with_inheritance(query: str, db_path: Path, limit: int) -> list[Symbol]:
