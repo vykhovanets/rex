@@ -710,30 +710,69 @@ def _search_with_inheritance(query: str, db_path: Path, limit: int) -> list[Symb
 
 
 def get_symbol(
-    qualified_name: str,
+    name: str,
     db_path_fn: Callable[[], Path] = get_db_path,
 ) -> Symbol | None:
-    """Get a symbol by its qualified name."""
+    """Get a symbol by qualified or short name."""
     db_path = ensure_db(db_path_fn)
 
     with get_connection(db_path) as conn:
+        qname = _resolve_qualified_name(name, conn)
+        if not qname:
+            return None
         row = conn.execute(
-            "SELECT * FROM symbols WHERE qualified_name = ?", (qualified_name,)
+            "SELECT * FROM symbols WHERE qualified_name = ?", (qname,)
         ).fetchone()
         if row:
             return row_to_symbol(row)
     return None
 
 
+def _resolve_qualified_name(name: str, conn: sqlite3.Connection) -> str | None:
+    """Resolve a short or qualified name to its full qualified_name.
+
+    Tries: exact qualified_name → exact short name → case-insensitive.
+    """
+    # Try exact qualified_name first
+    row = conn.execute(
+        "SELECT qualified_name FROM symbols WHERE qualified_name = ? LIMIT 1",
+        (name,),
+    ).fetchone()
+    if row:
+        return row["qualified_name"]
+
+    _TYPE_ORDER = """ORDER BY CASE symbol_type
+        WHEN 'class' THEN 0 WHEN 'module' THEN 1 ELSE 2
+    END LIMIT 1"""
+
+    # Exact short name
+    row = conn.execute(
+        f"SELECT qualified_name FROM symbols WHERE name = ? {_TYPE_ORDER}",
+        (name,),
+    ).fetchone()
+    if row:
+        return row["qualified_name"]
+
+    # Case-insensitive fallback
+    row = conn.execute(
+        f"SELECT qualified_name FROM symbols WHERE name COLLATE NOCASE = ? {_TYPE_ORDER}",
+        (name,),
+    ).fetchone()
+    return row["qualified_name"] if row else None
+
+
 def get_members(
-    qualified_name: str,
+    name: str,
     db_path_fn: Callable[[], Path] = get_db_path,
 ) -> list[Symbol]:
-    """Get members of a class or module."""
+    """Get members of a class or module (accepts short or qualified names)."""
     db_path = ensure_db(db_path_fn)
 
     with get_connection(db_path) as conn:
-        # Find symbols that start with this qualified name
+        qualified_name = _resolve_qualified_name(name, conn)
+        if not qualified_name:
+            return []
+
         prefix = qualified_name + "."
         rows = conn.execute(
             """
@@ -744,7 +783,9 @@ def get_members(
         """,
             (prefix + "%", prefix + "%.%"),
         ).fetchall()
-        return [row_to_symbol(row) for row in rows]
+        results = [row_to_symbol(row) for row in rows]
+        results.sort(key=_dunder_sort_key)
+        return results
 
 
 def get_stats(db_path_fn: Callable[[], Path] = get_db_path) -> dict:

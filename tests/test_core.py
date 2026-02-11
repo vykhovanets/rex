@@ -213,6 +213,12 @@ class TestGetSymbol:
         assert isinstance(sym, Symbol)
         assert sym.qualified_name == qn
 
+    def test_get_symbol_short_name(self, indexed_db):
+        sym = get_symbol("BaseModel", db_path_fn=indexed_db)
+        assert sym is not None
+        assert sym.name == "BaseModel"
+        assert sym.symbol_type == "class"
+
     def test_get_symbol_nonexistent(self, indexed_db):
         result = get_symbol("nonexistent.does.not.exist", db_path_fn=indexed_db)
         assert result is None
@@ -229,6 +235,21 @@ class TestGetMembers:
         assert len(members) > 0
         for m in members:
             assert m.qualified_name.startswith(qn + ".")
+
+    def test_get_members_short_name(self, indexed_db):
+        members = get_members("BaseModel", db_path_fn=indexed_db)
+        assert len(members) > 0
+        assert all(m.qualified_name.startswith("pydantic.") for m in members)
+
+    def test_get_members_dunders_sorted_last(self, indexed_db):
+        members = get_members("BaseModel", db_path_fn=indexed_db)
+        regular = [m for m in members if not m.name.startswith("__")]
+        dunders = [m for m in members if m.name.startswith("__")]
+        if regular and dunders:
+            # All regular members should appear before all dunders
+            last_regular = members.index(regular[-1])
+            first_dunder = members.index(dunders[0])
+            assert last_regular < first_dunder
 
 
 class TestGetStats:
