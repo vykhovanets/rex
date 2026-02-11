@@ -6,7 +6,7 @@ from pathlib import Path
 
 import typer
 
-from .api import format_symbol_detail, format_symbol_line, show_symbol
+from .api import format_symbol_detail, format_symbol_line, search_suggestion, show_symbol
 from .storage import build_index, clean_index, get_members, get_stats, search
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
@@ -50,16 +50,19 @@ def find(
     """Search for symbols matching query."""
     query_str = " ".join(query)
     try:
-        results = search(query_str, limit=limit, symbol_type=type_filter)
+        result = search(query_str, limit=limit, symbol_type=type_filter)
     except RuntimeError as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
 
-    if not results:
-        typer.echo(f"No symbols found matching: {query_str}")
+    hint = search_suggestion(query_str, result)
+    if hint:
+        typer.echo(f"{DIM}{hint}{RESET}", err=True)
+
+    if not result.symbols:
         raise typer.Exit(1)
 
-    for sym in results:
+    for sym in result.symbols:
         sig = sym.signature or ""
         if len(sig) > 50:
             sig = sig[:47] + "..."

@@ -11,7 +11,8 @@ from pathlib import Path
 import pytest
 
 from rex.indexer import Symbol
-from rex.api import format_symbol_detail, format_symbol_line, show_symbol
+from rex.api import format_symbol_detail, format_symbol_line, search_suggestion, show_symbol
+from rex.storage import SearchResult, search
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +216,7 @@ class TestShowSymbol:
         # Find a real qualified name via storage layer
         from rex.storage import search as raw_search
 
-        hits = raw_search("Symbol", db_path_fn=indexed_db, limit=1)
+        hits = raw_search("Symbol", db_path_fn=indexed_db, limit=1).symbols
         if not hits:
             pytest.skip("No symbols indexed -- cannot test exact match")
         qn = hits[0].qualified_name
@@ -236,3 +237,49 @@ class TestShowSymbol:
         result = show_symbol("zzz_nonexistent_xyz.does.not.exist", db_path_fn=indexed_db)
         assert isinstance(result, list)
         assert len(result) == 0
+
+
+# ---------------------------------------------------------------------------
+# D) search_suggestion
+# ---------------------------------------------------------------------------
+
+
+class TestSearchSuggestion:
+    """search_suggestion(query, result) -> str | None
+
+    Context-aware hint based on result quality and environment.
+    Returns None for exact FTS5 matches, hints for everything else.
+    """
+
+    def test_exact_match_no_suggestion(self, indexed_db):
+        result = search("BaseModel", db_path_fn=indexed_db)
+        assert search_suggestion("BaseModel", result) is None
+
+    def test_fuzzy_only_in_project_shows_approximate(self, indexed_db):
+        result = search("BaseModl", db_path_fn=indexed_db)
+        hint = search_suggestion("BaseModl", result)
+        assert hint is not None
+        assert "approximate" in hint.lower()
+        assert "Not in a Python project" not in hint
+
+    def test_fuzzy_only_outside_project(self, indexed_db, monkeypatch):
+        monkeypatch.setattr("rex.api.find_venv", lambda: None)
+        result = search("BaseModl", db_path_fn=indexed_db)
+        hint = search_suggestion("BaseModl", result)
+        assert hint is not None
+        assert "approximate" in hint.lower()
+        assert "Not in a Python project" in hint
+
+    def test_empty_outside_project(self, monkeypatch):
+        monkeypatch.setattr("rex.api.find_venv", lambda: None)
+        result = SearchResult()
+        hint = search_suggestion("torch", result)
+        assert "Not in a Python project" in hint
+
+    def test_empty_in_project_suggests_uv_add(self, indexed_db):
+        result = search("nonexistentpkg", db_path_fn=indexed_db)
+        hint = search_suggestion("nonexistentpkg", result)
+        assert hint is not None
+        assert "uv add" in hint
+        # Should not guess the package name from the query
+        assert "nonexistentpkg" not in hint

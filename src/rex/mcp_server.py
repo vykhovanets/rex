@@ -16,8 +16,8 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-from .api import format_symbol_detail, format_symbol_line, show_symbol
-from .storage import build_index, clean_index, get_members, get_stats, search
+from .api import format_symbol_detail, format_symbol_line, search_suggestion, show_symbol
+from .storage import get_members, search
 
 # =============================================================================
 # MCP Server
@@ -81,35 +81,6 @@ async def list_tools() -> list[Tool]:
                 "required": ["name"],
             },
         ),
-        Tool(
-            name="rex_index",
-            description="Build symbol index for .venv packages and optionally project source code. Run if search returns empty or after installing new packages. Pass project_dirs to also index project source files for better search coverage.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "force": {
-                        "type": "boolean",
-                        "description": "Force rebuild even if up-to-date",
-                        "default": False,
-                    },
-                    "project_dirs": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Directories of project source code to index alongside .venv (e.g., ['./src', '.'])",
-                    },
-                },
-            },
-        ),
-        Tool(
-            name="rex_stats",
-            description="Show index statistics: total symbols, packages, types.",
-            inputSchema={"type": "object", "properties": {}},
-        ),
-        Tool(
-            name="rex_clean",
-            description="Remove stale packages whose source files no longer exist on disk.",
-            inputSchema={"type": "object", "properties": {}},
-        ),
     ]
 
 
@@ -120,16 +91,19 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         query = arguments["query"]
         limit = arguments.get("limit", 15)
         symbol_type = arguments.get("symbol_type")
-        results = search(query, limit=limit, symbol_type=symbol_type)
+        result = search(query, limit=limit, symbol_type=symbol_type)
 
-        if not results:
-            stats = get_stats()
-            if "error" in stats:
-                return [TextContent(type="text", text="No index found. Run rex_index first.")]
-            return [TextContent(type="text", text=f"No symbols found for: {query}")]
+        if not result.symbols:
+            hint = search_suggestion(query, result)
+            msg = hint or f"No symbols found for: {query}"
+            return [TextContent(type="text", text=msg)]
 
-        output = [f"Found {len(results)} results for '{query}':\n"]
-        for sym in results:
+        output = []
+        hint = search_suggestion(query, result)
+        if hint:
+            output.append(f"Note: {hint}\n")
+        output.append(f"Found {len(result.symbols)} results for '{query}':\n")
+        for sym in result.symbols:
             output.append(format_symbol_line(sym))
             output.append(f"   \u2192 {sym.qualified_name}")
 
@@ -159,44 +133,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             output.append(f"  {format_symbol_line(sym)}")
 
         return [TextContent(type="text", text="\n".join(output))]
-
-    elif name == "rex_index":
-        force = arguments.get("force", False)
-        raw_dirs = arguments.get("project_dirs")
-        project_dirs = [Path(d).resolve() for d in raw_dirs] if raw_dirs else None
-        try:
-            count = build_index(force=force, project_dirs=project_dirs)
-            if count == -1:
-                return [TextContent(type="text", text="Index is up-to-date.")]
-            msg = f"Indexed {count:,} symbols."
-            if project_dirs:
-                msg += f" (including {len(project_dirs)} project dir(s))"
-            return [TextContent(type="text", text=msg)]
-        except RuntimeError as e:
-            return [TextContent(type="text", text=f"Error: {e}")]
-
-    elif name == "rex_stats":
-        info = get_stats()
-        if "error" in info:
-            return [TextContent(type="text", text=info["error"])]
-        lines = [
-            f"DB: {info['db_path']}",
-            f"Symbols: {info['total_symbols']:,}",
-            f"Packages: {info['packages']}",
-            "By type:",
-        ]
-        for stype, count in sorted(info["by_type"].items()):
-            lines.append(f"  {stype}: {count:,}")
-        return [TextContent(type="text", text="\n".join(lines))]
-
-    elif name == "rex_clean":
-        removed = clean_index()
-        if removed:
-            lines = [f"Removed {len(removed)} stale packages:"]
-            for pkg_name in removed:
-                lines.append(f"  {pkg_name}")
-            return [TextContent(type="text", text="\n".join(lines))]
-        return [TextContent(type="text", text="No stale packages found.")]
 
     return [TextContent(type="text", text=f"Unknown tool: {name}")]
 

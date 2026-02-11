@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from rex.indexer import find_venv
-from rex.storage import build_index, is_index_stale, search
+from rex.storage import SearchResult, build_index, is_index_stale, search
 
 PROJECT_DIR = Path("/Users/avykhova/Code/karb/rex")
 
@@ -66,8 +66,9 @@ class TestFuzzyFindsTypos:
         ],
     )
     def test_fuzzy_finds_close_match(self, indexed_db, typo, expected):
-        results = search(typo, db_path_fn=indexed_db)
-        names = [s.name for s in results]
+        result = search(typo, db_path_fn=indexed_db)
+        assert result.fuzzy_only  # typos → no FTS5 hits
+        names = [s.name for s in result.symbols]
         assert expected in names, f"{typo!r} should find {expected!r}, got {names[:5]}"
 
 
@@ -81,25 +82,26 @@ class TestFuzzyRanking:
     appear before fuzzy matches (Phase 2) in results."""
 
     def test_exact_match_ranks_first(self, indexed_db):
-        results = search("BaseModel", db_path_fn=indexed_db)
-        assert len(results) > 0
-        assert results[0].name == "BaseModel"
+        result = search("BaseModel", db_path_fn=indexed_db)
+        assert not result.fuzzy_only  # exact → FTS5 hit
+        assert len(result.symbols) > 0
+        assert result.symbols[0].name == "BaseModel"
 
     def test_prefix_match_ranks_above_fuzzy(self, indexed_db):
         # "BaseMod" is a valid FTS5 prefix — should rank above
         # any fuzzy results for unrelated symbols
-        results = search("BaseMod", db_path_fn=indexed_db)
-        assert len(results) > 0
-        top_names = [r.name for r in results[:3]]
+        result = search("BaseMod", db_path_fn=indexed_db)
+        assert len(result.symbols) > 0
+        top_names = [r.name for r in result.symbols[:3]]
         assert "BaseModel" in top_names
 
     def test_fuzzy_results_come_after_fts_results(self, indexed_db):
         # A typo that FTS5 can't match — all results must be fuzzy
-        results = search("BaseModl", db_path_fn=indexed_db)
-        if not results:
+        result = search("BaseModl", db_path_fn=indexed_db)
+        if not result.symbols:
             pytest.skip("fuzzy not implemented yet")
         # If there are results, they should include the target
-        names = [s.name for s in results]
+        names = [s.name for s in result.symbols]
         assert "BaseModel" in names
 
 
@@ -113,19 +115,19 @@ class TestFuzzyThreshold:
     is too far from any known symbol."""
 
     def test_distant_typo_returns_no_match(self, indexed_db):
-        results = search("Zxqwvbn", db_path_fn=indexed_db)
-        assert results == []
+        result = search("Zxqwvbn", db_path_fn=indexed_db)
+        assert result.symbols == []
 
     def test_very_mangled_name_no_match(self, indexed_db):
         # 4+ edits away from "BaseModel"
-        results = search("BaaaaMdl", db_path_fn=indexed_db)
-        names = [s.name for s in results]
+        result = search("BaaaaMdl", db_path_fn=indexed_db)
+        names = [s.name for s in result.symbols]
         assert "BaseModel" not in names
 
     def test_short_garbage_no_match(self, indexed_db):
-        results = search("zz", db_path_fn=indexed_db)
+        result = search("zz", db_path_fn=indexed_db)
         # Should return empty or unrelated — not fuzzy-match everything
-        names = [s.name for s in results]
+        names = [s.name for s in result.symbols]
         assert "BaseModel" not in names
         assert "Typer" not in names
 
@@ -139,25 +141,25 @@ class TestFuzzyEdgeCases:
     """Edge cases that should not crash or produce wrong results."""
 
     def test_single_char_query(self, indexed_db):
-        results = search("B", db_path_fn=indexed_db)
-        assert isinstance(results, list)
+        result = search("B", db_path_fn=indexed_db)
+        assert isinstance(result.symbols, list)
 
     def test_empty_query_still_returns_empty(self, indexed_db):
-        results = search("", db_path_fn=indexed_db)
-        assert results == []
+        result = search("", db_path_fn=indexed_db)
+        assert result.symbols == []
 
     def test_special_chars_with_typo(self, indexed_db):
         # FTS5 special chars mixed with a typo
-        results = search("Base+Modl", db_path_fn=indexed_db)
-        assert isinstance(results, list)
+        result = search("Base+Modl", db_path_fn=indexed_db)
+        assert isinstance(result.symbols, list)
 
     def test_fuzzy_respects_limit(self, indexed_db):
-        results = search("BaseModl", db_path_fn=indexed_db, limit=3)
-        assert len(results) <= 3
+        result = search("BaseModl", db_path_fn=indexed_db, limit=3)
+        assert len(result.symbols) <= 3
 
     def test_fuzzy_with_type_filter(self, indexed_db):
-        results = search("BaseModl", db_path_fn=indexed_db, symbol_type="class")
-        for sym in results:
+        result = search("BaseModl", db_path_fn=indexed_db, symbol_type="class")
+        for sym in result.symbols:
             assert sym.symbol_type == "class"
 
 
@@ -330,8 +332,8 @@ class TestAutoReindex:
         build_index(venv, db_path_fn=db_fn, force=True)
 
         # Verify old symbols found
-        results = search("OldClass", db_path_fn=db_fn)
-        assert any(s.name == "OldClass" for s in results)
+        result = search("OldClass", db_path_fn=db_fn)
+        assert any(s.name == "OldClass" for s in result.symbols)
 
         # Add a new package (simulating `uv add newlib`)
         sp = venv / "lib" / "python3.14" / "site-packages"
@@ -342,8 +344,8 @@ class TestAutoReindex:
         )
 
         # Search for the new symbol — should auto-reindex and find it
-        results = search("FreshClass", db_path_fn=db_fn)
-        names = [s.name for s in results]
+        result = search("FreshClass", db_path_fn=db_fn)
+        names = [s.name for s in result.symbols]
         assert "FreshClass" in names
 
     def test_search_finds_new_file_in_project_dir(self, tmp_path):
@@ -366,8 +368,8 @@ class TestAutoReindex:
         build_index(venv, project_dirs=[proj], db_path_fn=db_fn, force=True)
 
         # Verify project symbol is found
-        results = search("AppController", db_path_fn=db_fn)
-        assert any(s.name == "AppController" for s in results)
+        result = search("AppController", db_path_fn=db_fn)
+        assert any(s.name == "AppController" for s in result.symbols)
 
         # Add a NEW file to the project dir (simulating writing new code)
         time.sleep(0.05)
@@ -377,8 +379,8 @@ class TestAutoReindex:
         )
 
         # Search for the new symbol — should auto-reindex and find it
-        results = search("BrandNewWidget", db_path_fn=db_fn)
-        names = [s.name for s in results]
+        result = search("BrandNewWidget", db_path_fn=db_fn)
+        names = [s.name for s in result.symbols]
         assert "BrandNewWidget" in names
 
     def test_search_finds_modified_file_in_project_dir(self, tmp_path):
@@ -407,8 +409,8 @@ class TestAutoReindex:
             'class AddedLaterWidget:\n    """Added after index."""\n    pass\n'
         )
 
-        results = search("AddedLaterWidget", db_path_fn=db_fn)
-        names = [s.name for s in results]
+        result = search("AddedLaterWidget", db_path_fn=db_fn)
+        names = [s.name for s in result.symbols]
         assert "AddedLaterWidget" in names
 
     def test_search_finds_new_file_in_project_subdir(self, tmp_path):
@@ -442,8 +444,8 @@ class TestAutoReindex:
             '"""Deep."""\nclass DeepNestedWidget:\n    pass\n'
         )
 
-        results = search("DeepNestedWidget", db_path_fn=db_fn)
-        names = [s.name for s in results]
+        result = search("DeepNestedWidget", db_path_fn=db_fn)
+        names = [s.name for s in result.symbols]
         assert "DeepNestedWidget" in names
 
     def test_no_reindex_when_index_is_current(self, tmp_path):
@@ -457,5 +459,5 @@ class TestAutoReindex:
         build_index(venv, db_path_fn=db_fn, force=True)
 
         # Search for something that truly doesn't exist
-        results = search("CompletelyNonexistentXyz", db_path_fn=db_fn)
-        assert results == []
+        result = search("CompletelyNonexistentXyz", db_path_fn=db_fn)
+        assert result.symbols == []

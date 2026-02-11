@@ -203,8 +203,8 @@ class TestBuildIndexWithProjectDirs:
         db_fn = lambda: db
         build_index(venv, force=True, project_dirs=[sample_project], db_path_fn=db_fn)
 
-        results = search("UserModel", db_path_fn=db_fn)
-        names = [s.name for s in results]
+        result = search("UserModel", db_path_fn=db_fn)
+        names = [s.name for s in result.symbols]
         assert "UserModel" in names
 
 
@@ -214,12 +214,12 @@ class TestBuildIndexWithProjectDirs:
         build_index(venv, force=True, project_dirs=[sample_project], db_path_fn=db_fn)
 
         # Project symbol
-        proj_results = search("UserModel", db_path_fn=db_fn)
-        assert len(proj_results) > 0
+        proj_result = search("UserModel", db_path_fn=db_fn)
+        assert len(proj_result.symbols) > 0
 
         # Venv symbol (typer is installed in the venv)
-        venv_results = search("Typer", db_path_fn=db_fn)
-        assert len(venv_results) > 0
+        venv_result = search("Typer", db_path_fn=db_fn)
+        assert len(venv_result.symbols) > 0
 
 
 # ---------------------------------------------------------------------------
@@ -247,9 +247,9 @@ class TestSearchFindsProjectSymbols:
         db_fn = lambda: db
         build_index(venv, force=True, project_dirs=[tmp_path], db_path_fn=db_fn)
 
-        results = search("UniqueTestClassXyz123", db_path_fn=db_fn)
-        assert len(results) > 0
-        assert any(s.name == "UniqueTestClassXyz123" for s in results)
+        result = search("UniqueTestClassXyz123", db_path_fn=db_fn)
+        assert len(result.symbols) > 0
+        assert any(s.name == "UniqueTestClassXyz123" for s in result.symbols)
 
 
     def test_search_finds_unique_function(self, tmp_path, venv):
@@ -266,9 +266,9 @@ class TestSearchFindsProjectSymbols:
         db_fn = lambda: db
         build_index(venv, force=True, project_dirs=[tmp_path], db_path_fn=db_fn)
 
-        results = search("standalone_unique_func_qrs456", db_path_fn=db_fn)
-        assert len(results) > 0
-        assert any(s.name == "standalone_unique_func_qrs456" for s in results)
+        result = search("standalone_unique_func_qrs456", db_path_fn=db_fn)
+        assert len(result.symbols) > 0
+        assert any(s.name == "standalone_unique_func_qrs456" for s in result.symbols)
 
 
     def test_search_finds_unique_method(self, tmp_path, venv):
@@ -285,6 +285,6 @@ class TestSearchFindsProjectSymbols:
         db_fn = lambda: db
         build_index(venv, force=True, project_dirs=[tmp_path], db_path_fn=db_fn)
 
-        results = search("unique_method_holder_xyz", db_path_fn=db_fn)
-        assert len(results) > 0
-        assert any(s.name == "unique_method_holder_xyz" for s in results)
+        result = search("unique_method_holder_xyz", db_path_fn=db_fn)
+        assert len(result.symbols) > 0
+        assert any(s.name == "unique_method_holder_xyz" for s in result.symbols)

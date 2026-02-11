@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import sqlite3
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterator
 
@@ -22,6 +23,24 @@ from .indexer import (
     iter_packages,
     iter_py_files,
 )
+
+
+@dataclass
+class SearchResult:
+    """Structured search result separating FTS5 hits from fuzzy guesses."""
+
+    fts_results: list[Symbol] = field(default_factory=list)
+    fuzzy_results: list[Symbol] = field(default_factory=list)
+
+    @property
+    def symbols(self) -> list[Symbol]:
+        """All results, FTS5 first then fuzzy."""
+        return self.fts_results + self.fuzzy_results
+
+    @property
+    def fuzzy_only(self) -> bool:
+        """True when results exist but all came from fuzzy."""
+        return not self.fts_results and bool(self.fuzzy_results)
 
 
 def get_db_path() -> Path:
@@ -217,6 +236,9 @@ def build_index(
     site_packages = find_site_packages(venv)
     if site_packages is None:
         raise RuntimeError(f"No site-packages found in {venv}")
+
+    # Remove stale packages whose source dirs no longer exist
+    clean_index(db_path_fn=db_path_fn)
 
     with get_connection(db_path) as conn:
         create_schema(conn)
@@ -502,7 +524,7 @@ def _search_core(
     limit: int,
     symbol_type: str | None,
     db_path: Path,
-) -> list[Symbol]:
+) -> SearchResult:
     """Phase 1 (FTS5 + LIKE) + Phase 2 (fuzzy). No reindexing."""
     with get_connection(db_path) as conn:
         fts_query = _sanitize_fts_query(query)
@@ -548,13 +570,13 @@ def _search_core(
                 fts_results = [row_to_symbol(row) for row in rows]
 
         if len(fts_results) >= limit:
-            return fts_results
+            return SearchResult(fts_results=fts_results)
 
         # Phase 2: fuzzy fallback
         remaining = limit - len(fts_results)
         seen = {r.qualified_name for r in fts_results}
         fuzzy_results = _fuzzy_search(query, conn, remaining, symbol_type, seen)
-        return fts_results + fuzzy_results
+        return SearchResult(fts_results=fts_results, fuzzy_results=fuzzy_results)
 
 
 def search(
@@ -562,10 +584,10 @@ def search(
     limit: int = 50,
     symbol_type: str | None = None,
     db_path_fn: Callable[[], Path] = get_db_path,
-) -> list[Symbol]:
+) -> SearchResult:
     """Three-phase search: FTS5 -> fuzzy -> auto-reindex."""
     if not query or not query.strip():
-        return []
+        return SearchResult()
 
     db_path = ensure_db(db_path_fn)
 
@@ -574,11 +596,11 @@ def search(
     if "." in query:
         results = _search_with_inheritance(query, db_path, limit)
         if results:
-            return results
+            return SearchResult(fts_results=results)
 
-    results = _search_core(query, limit, symbol_type, db_path)
-    if results:
-        return results
+    result = _search_core(query, limit, symbol_type, db_path)
+    if result.symbols:
+        return result
 
     # Phase 3: auto-reindex if stale
     with get_connection(db_path) as conn:
@@ -588,7 +610,7 @@ def search(
         build_index(venv, project_dirs=project_dirs or None, db_path_fn=db_path_fn)
         return _search_core(query, limit, symbol_type, db_path)
 
-    return []
+    return SearchResult()
 
 
 def _search_with_inheritance(query: str, db_path: Path, limit: int) -> list[Symbol]:

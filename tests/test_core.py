@@ -9,6 +9,7 @@ import pytest
 
 from rex.indexer import Symbol, find_site_packages, find_venv, parse_file
 from rex.storage import (
+    SearchResult,
     build_index,
     clean_index,
     get_db_path,
@@ -154,52 +155,56 @@ class TestParseFile:
 
 class TestSearch:
     def test_search_typer(self, indexed_db):
-        results = search("Typer", db_path_fn=indexed_db)
-        assert len(results) > 0
-        names = [s.name for s in results]
+        result = search("Typer", db_path_fn=indexed_db)
+        assert len(result.symbols) > 0
+        names = [s.name for s in result.symbols]
         assert any("Typer" in n for n in names)
 
     def test_search_basemodel(self, indexed_db):
-        results = search("BaseModel", db_path_fn=indexed_db)
-        assert len(results) > 0
+        result = search("BaseModel", db_path_fn=indexed_db)
+        assert len(result.symbols) > 0
 
     def test_search_empty_returns_empty(self, indexed_db):
-        results = search("", db_path_fn=indexed_db)
-        assert results == []
+        result = search("", db_path_fn=indexed_db)
+        assert result.symbols == []
+
+    def test_search_returns_search_result(self, indexed_db):
+        result = search("Typer", db_path_fn=indexed_db)
+        assert isinstance(result, SearchResult)
 
     def test_search_special_char_parenthesis(self, indexed_db):
-        results = search("(", db_path_fn=indexed_db)
-        assert isinstance(results, list)
+        result = search("(", db_path_fn=indexed_db)
+        assert isinstance(result, SearchResult)
 
     def test_search_special_char_plus(self, indexed_db):
-        results = search("+", db_path_fn=indexed_db)
-        assert isinstance(results, list)
+        result = search("+", db_path_fn=indexed_db)
+        assert isinstance(result, SearchResult)
 
     def test_search_special_char_at(self, indexed_db):
-        results = search("@", db_path_fn=indexed_db)
-        assert isinstance(results, list)
+        result = search("@", db_path_fn=indexed_db)
+        assert isinstance(result, SearchResult)
 
     def test_search_special_keyword_NOT(self, indexed_db):
-        results = search("NOT", db_path_fn=indexed_db)
-        assert isinstance(results, list)
+        result = search("NOT", db_path_fn=indexed_db)
+        assert isinstance(result, SearchResult)
 
     def test_search_special_char_quote(self, indexed_db):
-        results = search('"', db_path_fn=indexed_db)
-        assert isinstance(results, list)
+        result = search('"', db_path_fn=indexed_db)
+        assert isinstance(result, SearchResult)
 
     def test_search_nonexistent(self, indexed_db):
-        results = search("nonexistent_xyz_abc", db_path_fn=indexed_db)
-        assert results == []
+        result = search("nonexistent_xyz_abc", db_path_fn=indexed_db)
+        assert result.symbols == []
 
     def test_search_type_filter(self, indexed_db):
-        results = search("BaseModel", db_path_fn=indexed_db, symbol_type="class")
-        assert len(results) > 0
-        assert all(s.symbol_type == "class" for s in results)
+        result = search("BaseModel", db_path_fn=indexed_db, symbol_type="class")
+        assert len(result.symbols) > 0
+        assert all(s.symbol_type == "class" for s in result.symbols)
 
 
 class TestGetSymbol:
     def test_get_symbol_existing(self, indexed_db):
-        hits = search("Typer", db_path_fn=indexed_db, limit=1)
+        hits = search("Typer", db_path_fn=indexed_db, limit=1).symbols
         assert len(hits) > 0
         qn = hits[0].qualified_name
 
@@ -215,7 +220,7 @@ class TestGetSymbol:
 
 class TestGetMembers:
     def test_get_members_known_class(self, indexed_db):
-        hits = search("BaseModel", db_path_fn=indexed_db, symbol_type="class")
+        hits = search("BaseModel", db_path_fn=indexed_db, symbol_type="class").symbols
         assert len(hits) > 0
         qn = hits[0].qualified_name
 
@@ -274,8 +279,8 @@ class TestCleanIndex:
         build_index(fake_venv, db_path_fn=db_fn, force=True)
 
         # Verify package was indexed
-        results = search("fakepkg", db_path_fn=db_fn)
-        assert len(results) > 0
+        result = search("fakepkg", db_path_fn=db_fn)
+        assert len(result.symbols) > 0
 
         # Delete the package directory
         import shutil
@@ -287,8 +292,8 @@ class TestCleanIndex:
         assert "fakepkg" in removed
 
         # Verify it's gone from search
-        results = search("fakepkg", db_path_fn=db_fn)
-        assert len(results) == 0
+        result = search("fakepkg", db_path_fn=db_fn)
+        assert len(result.symbols) == 0
 
     def test_clean_keeps_live_packages(self, tmp_path):
         """Clean should not remove packages that still exist."""
@@ -340,20 +345,20 @@ class TestPackagesTable:
 
 class TestBugRegressions:
     def test_empty_query_returns_empty(self, indexed_db):
-        results = search("", db_path_fn=indexed_db)
-        assert results == []
+        result = search("", db_path_fn=indexed_db)
+        assert result.symbols == []
 
     def test_whitespace_query_returns_empty(self, indexed_db):
-        results = search("   ", db_path_fn=indexed_db)
-        assert results == []
+        result = search("   ", db_path_fn=indexed_db)
+        assert result.symbols == []
 
     @pytest.mark.parametrize("char", ["(", "+", "@", "NOT", '"'])
     def test_special_chars_dont_crash(self, indexed_db, char):
         # Should not raise any exception
-        results = search(char, db_path_fn=indexed_db)
-        assert isinstance(results, list)
+        result = search(char, db_path_fn=indexed_db)
+        assert isinstance(result, SearchResult)
 
     def test_dotted_query_fallback(self, indexed_db):
         """Dotted query that won't match a class should fall back gracefully."""
-        results = search("SomeNonexistentClass.method", db_path_fn=indexed_db)
-        assert isinstance(results, list)
+        result = search("SomeNonexistentClass.method", db_path_fn=indexed_db)
+        assert isinstance(result, SearchResult)

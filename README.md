@@ -39,6 +39,15 @@ only packages whose files changed since the last run are
 re-indexed. First run takes ~30s; subsequent runs are
 instant.
 
+Search has three phases:
+1. **FTS5** — exact and prefix matches via SQLite full-text
+2. **Fuzzy** — typo-tolerant fallback (rapidfuzz)
+3. **Auto-reindex** — if nothing found and index is stale
+
+When results are fuzzy-only or empty, rex shows a
+contextual hint (e.g. "approximate matches" or
+"try: uv add <package>").
+
 ## CLI
 
 ```bash
@@ -58,14 +67,11 @@ rex clean              # Remove stale packages
 Claude Code can use rex too — same speed, no
 round-trips to the web.
 
-| Tool          | Description                       |
-|---------------|-----------------------------------|
-| `rex_find`    | Search symbols (+ type filter)    |
-| `rex_show`    | Full docs for a symbol            |
-| `rex_members` | List class/module members         |
-| `rex_index`   | Build/update index                |
-| `rex_stats`   | Index statistics                  |
-| `rex_clean`   | Remove stale packages             |
+| Tool          | Description                   |
+|---------------|-------------------------------|
+| `rex_find`    | Search symbols (+ type filter)|
+| `rex_show`    | Full docs for a symbol        |
+| `rex_members` | List class/module members     |
 
 ![example](./example.jpg)
 
