@@ -554,8 +554,12 @@ def _sanitize_fts_query(query: str) -> str:
 
 
 def _dunder_sort_key(sym: Symbol) -> tuple[int, str]:
-    """Sort key: regular symbols first, dunders last."""
-    return (1 if sym.name.startswith("__") else 0, sym.name)
+    """Sort key: public first, __dunder__ second, _private last."""
+    if sym.name.startswith("__"):
+        return (1, sym.name)
+    if sym.name.startswith("_"):
+        return (2, sym.name)
+    return (0, sym.name)
 
 
 def _search_core(
@@ -758,7 +762,21 @@ def _resolve_qualified_name(name: str, conn: sqlite3.Connection) -> str | None:
         f"SELECT qualified_name FROM symbols WHERE name COLLATE NOCASE = ? {_TYPE_ORDER}",
         (name,),
     ).fetchone()
-    return row["qualified_name"] if row else None
+    if row:
+        return row["qualified_name"]
+
+    # Prefix glob: "rerun.Scalars" → name='Scalars' under 'rerun.%'
+    parts = name.rsplit(".", 1)
+    if len(parts) == 2:
+        prefix, symbol = parts
+        row = conn.execute(
+            f"SELECT qualified_name FROM symbols WHERE name = ? AND qualified_name LIKE ? {_TYPE_ORDER}",
+            (symbol, f"{prefix}.%"),
+        ).fetchone()
+        if row:
+            return row["qualified_name"]
+
+    return None
 
 
 def get_members(

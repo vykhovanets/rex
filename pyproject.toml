@@ -24,4 +24,5 @@ packages = ["src/rex"]
 [dependency-groups]
 dev = [
     "pytest>=9.0.2",
+    "rerun-sdk[datafusion]>=0.29.1",
 ]

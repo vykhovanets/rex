@@ -223,6 +223,19 @@ class TestGetSymbol:
         result = get_symbol("nonexistent.does.not.exist", db_path_fn=indexed_db)
         assert result is None
 
+    def test_get_symbol_prefix_dot_name(self, indexed_db):
+        """'pydantic.BaseModel' should resolve to 'pydantic.main.BaseModel'.
+
+        Users type 'package.ClassName' as a shorthand — rex should find
+        the symbol by name within the package namespace even when there
+        are intermediate modules (main, archetypes, etc).
+        """
+        sym = get_symbol("pydantic.BaseModel", db_path_fn=indexed_db)
+        assert sym is not None
+        assert sym.name == "BaseModel"
+        assert sym.qualified_name.startswith("pydantic.")
+        assert sym.symbol_type == "class"
+
 
 class TestGetMembers:
     def test_get_members_known_class(self, indexed_db):

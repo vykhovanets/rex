@@ -250,22 +250,64 @@ def find_site_packages(venv: Path) -> Path | None:
     return None
 
 
+_SKIP_SUFFIXES = {".dist-info", ".egg-info", ".so", ".pyd", ".pth"}
+
+
+def _is_package(entry: Path) -> tuple[str, Path] | None:
+    """Check if a directory entry is a Python package or module.
+
+    Returns (name, path) or None.
+    """
+    if entry.name.startswith(("_", ".")):
+        return None
+    if entry.suffix in _SKIP_SUFFIXES:
+        return None
+    if entry.is_dir() and (entry / "__init__.py").exists():
+        return entry.name, entry
+    if entry.suffix == ".py":
+        return entry.stem, entry
+    return None
+
+
+def _iter_pth_packages(
+    site_packages: Path, pth_file: Path, seen: set[str],
+) -> Iterator[tuple[str, Path]]:
+    """Yield packages from directories listed in a .pth file."""
+    try:
+        text = pth_file.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith(("#", "import ")):
+            continue
+        pth_dir = (site_packages / line).resolve()
+        if not pth_dir.is_dir():
+            continue
+        for sub in pth_dir.iterdir():
+            pkg = _is_package(sub)
+            if pkg and pkg[0] not in seen:
+                seen.add(pkg[0])
+                yield pkg
+
+
 def iter_packages(site_packages: Path) -> Iterator[tuple[str, Path]]:
     """Iterate over packages in site-packages.
 
     Yields (package_name, package_path) tuples.
+    Also scans .pth files for packages with non-standard layouts
+    (e.g. rerun_sdk.pth -> rerun_sdk/rerun/).
     """
-    for entry in site_packages.iterdir():
-        # Skip metadata, caches, and non-packages
-        if entry.name.startswith(("_", ".")):
-            continue
-        if entry.suffix in (".dist-info", ".egg-info", ".pth", ".so", ".pyd"):
-            continue
+    seen: set[str] = set()
 
-        if entry.is_dir() and (entry / "__init__.py").exists():
-            yield entry.name, entry
-        elif entry.suffix == ".py":
-            yield entry.stem, entry
+    for entry in site_packages.iterdir():
+        if entry.suffix == ".pth":
+            yield from _iter_pth_packages(site_packages, entry, seen)
+            continue
+        pkg = _is_package(entry)
+        if pkg and pkg[0] not in seen:
+            seen.add(pkg[0])
+            yield pkg
 
 
 def index_package(package_name: str, package_path: Path) -> Iterator[Symbol]:
@@ -275,40 +317,39 @@ def index_package(package_name: str, package_path: Path) -> Iterator[Symbol]:
         yield from parse_file(package_path, package_name)
         return
 
-    # Directory package — skip private files (venv noise)
-    for file_path in iter_py_files(package_path, skip_private=True):
+    # Directory package — include _-prefixed files (public symbols
+    # are often defined there and re-exported via __init__.py)
+    for file_path in iter_py_files(package_path):
         rel_path = file_path.relative_to(package_path.parent)
         parts = list(rel_path.parts)
 
         if parts[-1] == "__init__.py":
             parts = parts[:-1]
         else:
-            parts[-1] = parts[-1][:-3]  # Remove .py
+            parts[-1] = Path(parts[-1]).stem  # Remove .py/.pyi
 
         module_name = ".".join(parts)
         yield from parse_file(file_path, module_name)
 
 
-def iter_py_files(
-    directory: Path, *, skip_private: bool = False,
-) -> Iterator[Path]:
-    """Yield .py file paths under directory, skipping hidden/cache dirs.
+def iter_py_files(directory: Path) -> Iterator[Path]:
+    """Yield .py/.pyi file paths under directory, skipping hidden/cache dirs.
 
-    Args:
-        skip_private: Also skip _-prefixed files (except __init__.py).
-            Used for venv packages where private modules add noise.
+    When both foo.py and foo.pyi exist, only foo.py is yielded.
+    Stubs are used as fallback for compiled extensions (e.g. .so/.pyd).
     """
     for root, dirs, files in os.walk(directory):
         dirs[:] = [
             d for d in dirs
             if not d.startswith((".", "_")) and d != "__pycache__"
         ]
-        for f in files:
-            if not f.endswith(".py"):
-                continue
-            if skip_private and f.startswith("_") and f != "__init__.py":
-                continue
+        py_files = {f for f in files if f.endswith(".py")}
+        for f in py_files:
             yield Path(root) / f
+        # .pyi stubs only when no .py counterpart exists
+        for f in files:
+            if f.endswith(".pyi") and f[:-1] not in py_files:
+                yield Path(root) / f
 
 
 def index_directory(directory: Path) -> Iterator[Symbol]:
