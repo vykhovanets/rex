@@ -10,6 +10,8 @@ from typing import Callable, Iterator
 
 from rapidfuzz import fuzz, process
 
+_PROJECT_PREFIX = "project:"
+
 from .indexer import (
     Symbol,
     find_site_packages,
@@ -176,6 +178,14 @@ def _project_mtime(proj_dir: Path) -> float:
     return max_mtime
 
 
+def _delete_package_symbols(conn: sqlite3.Connection, pkg_name: str) -> None:
+    """Delete all symbols belonging to a package."""
+    conn.execute(
+        "DELETE FROM symbols WHERE qualified_name LIKE ? OR qualified_name = ?",
+        (f"{pkg_name}.%", pkg_name),
+    )
+
+
 def _is_package_stale(
     conn: sqlite3.Connection,
     pkg_name: str,
@@ -224,11 +234,7 @@ def build_index(
 
             current_mtime = _package_mtime(pkg_path)
 
-            # Delete old symbols for this package
-            conn.execute(
-                "DELETE FROM symbols WHERE qualified_name LIKE ? OR qualified_name = ?",
-                (f"{pkg_name}.%", pkg_name),
-            )
+            _delete_package_symbols(conn, pkg_name)
 
             # Index and insert new symbols
             symbols = list(index_package(pkg_name, pkg_path))
@@ -247,7 +253,7 @@ def build_index(
         if project_dirs:
             for proj_dir in project_dirs:
                 proj_dir = proj_dir.resolve()
-                source_key = f"project:{proj_dir}"
+                source_key = f"{_PROJECT_PREFIX}{proj_dir}"
                 current_mtime = _project_mtime(proj_dir)
 
                 if not force:
@@ -264,10 +270,7 @@ def build_index(
                     (source_key,),
                 ).fetchall()
                 for old_pkg in old_pkgs:
-                    conn.execute(
-                        "DELETE FROM symbols WHERE qualified_name LIKE ? OR qualified_name = ?",
-                        (f"{old_pkg['name']}.%", old_pkg['name']),
-                    )
+                    _delete_package_symbols(conn, old_pkg["name"])
                 conn.execute(
                     "DELETE FROM packages WHERE source_path = ?", (source_key,)
                 )
@@ -277,7 +280,7 @@ def build_index(
 
                 conn.execute(
                     "INSERT OR REPLACE INTO packages (name, source_path, mtime, symbol_count) VALUES (?, ?, ?, ?)",
-                    (f"project:{proj_dir.name}", source_key, current_mtime, count),
+                    (f"{_PROJECT_PREFIX}{proj_dir.name}", source_key, current_mtime, count),
                 )
                 conn.commit()
                 total_new += count
@@ -320,7 +323,7 @@ def is_index_stale(
 
         # Check if DB has venv packages that are no longer on disk
         db_rows = conn.execute(
-            "SELECT name FROM packages WHERE source_path NOT LIKE 'project:%'"
+            f"SELECT name FROM packages WHERE source_path NOT LIKE '{_PROJECT_PREFIX}%'"
         ).fetchall()
         for row in db_rows:
             if row["name"] not in disk_names:
@@ -329,10 +332,10 @@ def is_index_stale(
         # Check project dirs: compare stored mtime against current tree mtime
         proj_rows = conn.execute(
             "SELECT source_path, mtime FROM packages "
-            "WHERE source_path LIKE 'project:%'"
+            f"WHERE source_path LIKE '{_PROJECT_PREFIX}%'"
         ).fetchall()
         for row in proj_rows:
-            proj_path = Path(row["source_path"].removeprefix("project:"))
+            proj_path = Path(row["source_path"].removeprefix(_PROJECT_PREFIX))
             if not proj_path.is_dir():
                 return True  # project dir removed
             if _project_mtime(proj_path) != row["mtime"]:
@@ -345,7 +348,7 @@ def _infer_venv(conn: sqlite3.Connection) -> Path | None:
     """Infer venv path from stored package source paths."""
     row = conn.execute(
         "SELECT source_path FROM packages "
-        "WHERE source_path NOT LIKE 'project:%' LIMIT 1"
+        f"WHERE source_path NOT LIKE '{_PROJECT_PREFIX}%' LIMIT 1"
     ).fetchone()
     if not row:
         return None
@@ -365,11 +368,11 @@ def _infer_project_dirs(conn: sqlite3.Connection) -> list[Path]:
     """
     rows = conn.execute(
         "SELECT DISTINCT source_path FROM packages "
-        "WHERE source_path LIKE 'project:%'"
+        f"WHERE source_path LIKE '{_PROJECT_PREFIX}%'"
     ).fetchall()
     dirs = []
     for row in rows:
-        path = Path(row["source_path"].removeprefix("project:"))
+        path = Path(row["source_path"].removeprefix(_PROJECT_PREFIX))
         if path.is_dir():
             dirs.append(path)
     return dirs
@@ -385,18 +388,14 @@ def clean_index(db_path_fn: Callable[[], Path] = get_db_path) -> list[str]:
     with get_connection(db_path) as conn:
         rows = conn.execute("SELECT name, source_path FROM packages").fetchall()
         for row in rows:
-            # For project dirs, source_path starts with "project:"
-            if row["source_path"].startswith("project:"):
-                check_path = Path(row["source_path"][len("project:"):])
+            if row["source_path"].startswith(_PROJECT_PREFIX):
+                check_path = Path(row["source_path"].removeprefix(_PROJECT_PREFIX))
             else:
                 check_path = Path(row["source_path"])
 
             if not check_path.exists():
                 pkg_name = row["name"]
-                conn.execute(
-                    "DELETE FROM symbols WHERE qualified_name LIKE ? OR qualified_name = ?",
-                    (f"{pkg_name}.%", pkg_name),
-                )
+                _delete_package_symbols(conn, pkg_name)
                 conn.execute("DELETE FROM packages WHERE name = ?", (pkg_name,))
                 removed.append(pkg_name)
 

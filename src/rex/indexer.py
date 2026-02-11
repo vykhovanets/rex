@@ -271,43 +271,40 @@ def index_package(package_name: str, package_path: Path) -> Iterator[Symbol]:
         yield from parse_file(package_path, package_name)
         return
 
-    # Directory package
-    for root, dirs, files in os.walk(package_path):
-        root_path = Path(root)
+    # Directory package — skip private files (venv noise)
+    for file_path in iter_py_files(package_path, skip_private=True):
+        rel_path = file_path.relative_to(package_path.parent)
+        parts = list(rel_path.parts)
 
-        # Skip hidden and cache directories
-        dirs[:] = [d for d in dirs if not d.startswith((".", "_")) and d != "__pycache__"]
+        if parts[-1] == "__init__.py":
+            parts = parts[:-1]
+        else:
+            parts[-1] = parts[-1][:-3]  # Remove .py
 
-        for file in files:
-            if not file.endswith(".py"):
-                continue
-            if file.startswith("_") and file != "__init__.py":
-                continue
-
-            file_path = root_path / file
-            # Calculate module name
-            rel_path = file_path.relative_to(package_path.parent)
-            parts = list(rel_path.parts)
-
-            if parts[-1] == "__init__.py":
-                parts = parts[:-1]
-            else:
-                parts[-1] = parts[-1][:-3]  # Remove .py
-
-            module_name = ".".join(parts)
-            yield from parse_file(file_path, module_name)
+        module_name = ".".join(parts)
+        yield from parse_file(file_path, module_name)
 
 
-def iter_py_files(directory: Path) -> Iterator[Path]:
-    """Yield .py file paths under directory, skipping hidden/cache dirs."""
+def iter_py_files(
+    directory: Path, *, skip_private: bool = False,
+) -> Iterator[Path]:
+    """Yield .py file paths under directory, skipping hidden/cache dirs.
+
+    Args:
+        skip_private: Also skip _-prefixed files (except __init__.py).
+            Used for venv packages where private modules add noise.
+    """
     for root, dirs, files in os.walk(directory):
         dirs[:] = [
             d for d in dirs
             if not d.startswith((".", "_")) and d != "__pycache__"
         ]
         for f in files:
-            if f.endswith(".py"):
-                yield Path(root) / f
+            if not f.endswith(".py"):
+                continue
+            if skip_private and f.startswith("_") and f != "__init__.py":
+                continue
+            yield Path(root) / f
 
 
 def index_directory(directory: Path) -> Iterator[Symbol]:
