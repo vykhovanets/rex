@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Callable
 
 from .indexer import Symbol, find_venv
-from .storage import SearchResult, get_db_path, get_symbol, search
+from .storage import SearchResult, get_db_path, get_members, get_symbol, search
 
 
 def format_symbol_line(sym: Symbol, sig_max: int = 50) -> str:
@@ -17,8 +17,14 @@ def format_symbol_line(sym: Symbol, sig_max: int = 50) -> str:
     return f"{sym.symbol_type:8} {sym.name}{sig}"
 
 
-def format_symbol_detail(sym: Symbol) -> str:
-    """Multi-line plain text detail view."""
+def format_symbol_detail(
+    sym: Symbol,
+    db_path_fn: Callable[[], Path] = get_db_path,
+) -> str:
+    """Multi-line plain text detail view.
+
+    For classes/modules, appends a brief member listing.
+    """
     lines = [f"{sym.symbol_type}: {sym.qualified_name}"]
     if sym.signature:
         lines.append(f"signature: {sym.signature}")
@@ -26,6 +32,17 @@ def format_symbol_detail(sym: Symbol) -> str:
         doc = sym.docstring if len(sym.docstring) <= 1500 else sym.docstring[:1500] + "..."
         lines.append(f"docstring: {doc}")
     lines.append(f"location: {sym.file_path}:{sym.line_no}")
+
+    if sym.symbol_type in ("class", "module"):
+        members = get_members(sym.qualified_name, db_path_fn=db_path_fn)
+        if members:
+            lines.append("members:")
+            for m in members:
+                sig = m.signature or ""
+                if len(sig) > 50:
+                    sig = sig[:47] + "..."
+                lines.append(f"  {m.symbol_type:8} {m.name}{sig}")
+
     return "\n".join(lines)
 
 
