@@ -260,6 +260,7 @@ class TestSearchSuggestion:
         hint = search_suggestion("BaseModl", result)
         assert hint is not None
         assert "approximate" in hint.lower()
+        assert "uv add" in hint
         assert "Not in a Python project" not in hint
 
     def test_fuzzy_only_outside_project(self, indexed_db, monkeypatch):

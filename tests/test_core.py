@@ -291,9 +291,9 @@ class TestCleanIndex:
         removed = clean_index(db_path_fn=db_fn)
         assert "fakepkg" in removed
 
-        # Verify it's gone from search
+        # Verify fakepkg is gone from search
         result = search("fakepkg", db_path_fn=db_fn)
-        assert len(result.symbols) == 0
+        assert not any(s.qualified_name.startswith("fakepkg.") for s in result.symbols)
 
     def test_clean_keeps_live_packages(self, tmp_path):
         """Clean should not remove packages that still exist."""

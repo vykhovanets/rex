@@ -125,6 +125,8 @@ class ASTExtractor(ast.NodeVisitor):
         return None
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        if node.name.startswith("_") and not node.name.startswith("__"):
+            return  # skip private classes (but keep dunders)
         bases = tuple(ast.unparse(b) for b in node.bases)
         self.symbols.append(
             Symbol(
@@ -152,6 +154,8 @@ class ASTExtractor(ast.NodeVisitor):
     def _visit_function(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef, is_async: bool = False
     ) -> None:
+        if node.name.startswith("_") and not node.name.startswith("__"):
+            return  # skip private functions (but keep dunders)
         symbol_type = "method" if self._class_stack else "function"
         if is_async:
             symbol_type = f"async_{symbol_type}"

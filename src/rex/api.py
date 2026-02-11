@@ -38,7 +38,10 @@ def search_suggestion(query: str, result: SearchResult) -> str | None:
 
     if result.fuzzy_only:
         if in_project:
-            return "Showing approximate matches (no exact results)."
+            return (
+                "Showing approximate matches (no exact results). "
+                "Package may not be installed — try: uv add <package>"
+            )
         return (
             "Showing approximate matches (no exact results). "
             "Not in a Python project — no sources to reindex."

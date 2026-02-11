@@ -435,6 +435,40 @@ def ensure_db(db_path_fn: Callable[[], Path] = get_db_path) -> Path:
     return db_path
 
 
+def refresh_index(db_path_fn: Callable[[], Path] = get_db_path) -> bool:
+    """Check if index is stale and rebuild if needed.
+
+    Auto-detects venv and project dirs from DB + cwd.
+    Returns True if reindexing happened.
+    """
+    db_path = db_path_fn()
+    if not db_path.exists():
+        return False
+
+    with get_connection(db_path) as conn:
+        venv = _infer_venv(conn)
+        project_dirs = _infer_project_dirs(conn)
+
+    if not venv:
+        venv = find_venv()
+    if not venv:
+        return False
+
+    # Auto-detect project dir from cwd if not already indexed
+    cwd = Path.cwd().resolve()
+    if (cwd / "pyproject.toml").exists() or (cwd / "setup.py").exists():
+        if cwd not in project_dirs:
+            project_dirs.append(cwd)
+
+    if not is_index_stale(venv, db_path_fn=db_path_fn):
+        return False
+
+    build_index(
+        venv, project_dirs=project_dirs or None, db_path_fn=db_path_fn,
+    )
+    return True
+
+
 def _fuzzy_search(
     query: str,
     conn: sqlite3.Connection,
@@ -519,6 +553,11 @@ def _sanitize_fts_query(query: str) -> str:
     return " ".join(fts_parts)
 
 
+def _dunder_sort_key(sym: Symbol) -> tuple[int, str]:
+    """Sort key: regular symbols first, dunders last."""
+    return (1 if sym.name.startswith("__") else 0, sym.name)
+
+
 def _search_core(
     query: str,
     limit: int,
@@ -570,12 +609,15 @@ def _search_core(
                 fts_results = [row_to_symbol(row) for row in rows]
 
         if len(fts_results) >= limit:
+            fts_results.sort(key=_dunder_sort_key)
             return SearchResult(fts_results=fts_results)
 
         # Phase 2: fuzzy fallback
         remaining = limit - len(fts_results)
         seen = {r.qualified_name for r in fts_results}
         fuzzy_results = _fuzzy_search(query, conn, remaining, symbol_type, seen)
+        fts_results.sort(key=_dunder_sort_key)
+        fuzzy_results.sort(key=_dunder_sort_key)
         return SearchResult(fts_results=fts_results, fuzzy_results=fuzzy_results)
 
 
@@ -585,11 +627,12 @@ def search(
     symbol_type: str | None = None,
     db_path_fn: Callable[[], Path] = get_db_path,
 ) -> SearchResult:
-    """Three-phase search: FTS5 -> fuzzy -> auto-reindex."""
+    """Search with automatic freshness check."""
     if not query or not query.strip():
         return SearchResult()
 
     db_path = ensure_db(db_path_fn)
+    refresh_index(db_path_fn)
 
     # Handle "Class.method" style queries — try inheritance search first,
     # but fall through to normal search if it returns nothing
@@ -598,19 +641,7 @@ def search(
         if results:
             return SearchResult(fts_results=results)
 
-    result = _search_core(query, limit, symbol_type, db_path)
-    if result.symbols:
-        return result
-
-    # Phase 3: auto-reindex if stale
-    with get_connection(db_path) as conn:
-        venv = _infer_venv(conn)
-        project_dirs = _infer_project_dirs(conn)
-    if venv and is_index_stale(venv, db_path_fn=db_path_fn):
-        build_index(venv, project_dirs=project_dirs or None, db_path_fn=db_path_fn)
-        return _search_core(query, limit, symbol_type, db_path)
-
-    return SearchResult()
+    return _search_core(query, limit, symbol_type, db_path)
 
 
 def _search_with_inheritance(query: str, db_path: Path, limit: int) -> list[Symbol]:
