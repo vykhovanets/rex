@@ -769,14 +769,70 @@ def _resolve_qualified_name(name: str, conn: sqlite3.Connection) -> str | None:
     parts = name.rsplit(".", 1)
     if len(parts) == 2:
         prefix, symbol = parts
-        row = conn.execute(
-            f"SELECT qualified_name FROM symbols WHERE name = ? AND qualified_name LIKE ? {_TYPE_ORDER}",
-            (symbol, f"{prefix}.%"),
-        ).fetchone()
-        if row:
-            return row["qualified_name"]
+
+        result = _prefix_glob_unambiguous(symbol, f"{prefix}.%", conn)
+        if result:
+            return result
+
+        # Chained resolution: resolve the prefix itself, then retry
+        resolved_prefix = _resolve_qualified_name(prefix, conn)
+        if resolved_prefix:
+            result = _prefix_glob_unambiguous(
+                symbol, f"{resolved_prefix}.%", conn,
+                max_gap=0,
+            )
+            if result:
+                return result
 
     return None
+
+
+def _prefix_glob_unambiguous(
+    symbol: str, like_pattern: str, conn: sqlite3.Connection,
+    *, max_gap: int = 1,
+) -> str | None:
+    """Find symbol under prefix, returning None if ambiguous.
+
+    Classes/modules ignore max_gap — internal module nesting is an
+    implementation detail (rerun.Scalars → rerun.archetypes.scalars.Scalars).
+    Methods/functions respect max_gap — the user should specify the class
+    (pydantic.model_validate is ambiguous, pydantic.BaseModel.model_validate is not).
+
+    When multiple parents exist, picks the shallowest if it's unique.
+    """
+    prefix_depth = like_pattern.count(".") - 1
+    expected_depth = prefix_depth + 1
+
+    rows = conn.execute(
+        "SELECT qualified_name, symbol_type FROM symbols "
+        "WHERE name = ? AND qualified_name LIKE ?",
+        (symbol, like_pattern),
+    ).fetchall()
+    if not rows:
+        return None
+
+    candidates = []
+    for r in rows:
+        gap = r["qualified_name"].count(".") - expected_depth
+        # Classes/modules: no depth limit (module nesting is implementation detail)
+        # Methods/functions: strict gap (user should specify the owning class)
+        if r["symbol_type"] in ("class", "module") or gap <= max_gap:
+            candidates.append(r["qualified_name"])
+    if not candidates:
+        return None
+
+    parents = {qn.rsplit(".", 1)[0] for qn in candidates}
+    if len(parents) == 1:
+        return min(candidates, key=len)
+
+    # Multiple parents — pick shallowest if unique at that depth
+    min_depth = min(qn.count(".") for qn in candidates)
+    shallowest = [qn for qn in candidates if qn.count(".") == min_depth]
+    shallow_parents = {qn.rsplit(".", 1)[0] for qn in shallowest}
+    if len(shallow_parents) == 1:
+        return min(shallowest, key=len)
+
+    return None  # truly ambiguous
 
 
 def get_members(

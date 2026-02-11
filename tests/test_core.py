@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from rex.api import show_symbol
 from rex.indexer import Symbol, find_site_packages, find_venv, parse_file
 from rex.storage import (
     SearchResult,
@@ -235,6 +236,33 @@ class TestGetSymbol:
         assert sym.name == "BaseModel"
         assert sym.qualified_name.startswith("pydantic.")
         assert sym.symbol_type == "class"
+
+    def test_get_symbol_chained_prefix(self, indexed_db):
+        """'pydantic.BaseModel.model_validate' should chain resolution.
+
+        First resolve 'pydantic.BaseModel' → 'pydantic.main.BaseModel',
+        then find 'model_validate' under that prefix.
+        """
+        sym = get_symbol("pydantic.BaseModel.model_validate", db_path_fn=indexed_db)
+        assert sym is not None
+        assert sym.name == "model_validate"
+        assert "BaseModel" in sym.qualified_name
+
+    def test_get_symbol_ambiguous_prefix_returns_none(self, indexed_db):
+        """'pydantic.model_validate' matches multiple classes.
+
+        When prefix-glob finds multiple distinct owners, get_symbol
+        should return None (let caller show suggestions) rather than
+        silently picking one.
+        """
+        sym = get_symbol("pydantic.model_validate", db_path_fn=indexed_db)
+        assert sym is None
+
+    def test_show_symbol_ambiguous_returns_suggestions(self, indexed_db):
+        """Ambiguous prefix-glob should produce suggestions, not empty."""
+        result = show_symbol("pydantic.model_validate", db_path_fn=indexed_db)
+        assert isinstance(result, list), "should return suggestions, not Symbol"
+        assert len(result) > 0, "should have candidates to show user"
 
 
 class TestGetMembers:
