@@ -575,47 +575,73 @@ def _dunder_sort_key(sym: Symbol) -> tuple[int, str]:
     return (0, sym.name)
 
 
+def _fts_query_col(
+    fts_query: str,
+    columns: str,
+    conn: sqlite3.Connection,
+    limit: int,
+    symbol_type: str | None,
+    seen: set[str] | None = None,
+) -> list[Symbol]:
+    """Run an FTS5 MATCH scoped to *columns* (e.g. '{name qualified_name}').
+
+    Returns up to *limit* symbols, excluding any qualified names in *seen*.
+    """
+    match_expr = f"{columns}: {fts_query}"
+    sql = """
+        SELECT s.*, bm25(symbols_fts) as rank
+        FROM symbols s
+        JOIN symbols_fts ON s.id = symbols_fts.rowid
+        WHERE symbols_fts MATCH ?
+    """
+    params: list = [match_expr]
+    if symbol_type:
+        sql += " AND s.symbol_type = ?"
+        params.append(symbol_type)
+    sql += " ORDER BY rank LIMIT ?"
+    params.append(limit)
+    try:
+        rows = conn.execute(sql, params).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    results: list[Symbol] = []
+    for row in rows:
+        sym = row_to_symbol(row)
+        if seen and sym.qualified_name in seen:
+            continue
+        results.append(sym)
+    return results
+
+
 def _search_core(
     query: str,
     limit: int,
     symbol_type: str | None,
     db_path: Path,
 ) -> SearchResult:
-    """Phase 1 (FTS5 + LIKE) + Phase 2 (fuzzy). No reindexing."""
+    """Phase 1 (name/qname FTS + LIKE) + Phase 2 (docstring + fuzzy)."""
     with get_connection(db_path) as conn:
         fts_query = _sanitize_fts_query(query)
         fts_results: list[Symbol] = []
 
+        # --- Phase 1: exact matches (name / qualified_name) --------
         if fts_query:
-            sql = """
-                SELECT s.*, bm25(symbols_fts) as rank
-                FROM symbols s
-                JOIN symbols_fts ON s.id = symbols_fts.rowid
-                WHERE symbols_fts MATCH ?
-            """
-            params: list = [fts_query]
+            fts_results = _fts_query_col(
+                fts_query, "{name qualified_name}",
+                conn, limit, symbol_type,
+            )
 
-            if symbol_type:
-                sql += " AND s.symbol_type = ?"
-                params.append(symbol_type)
-
-            sql += " ORDER BY rank LIMIT ?"
-            params.append(limit)
-
-            try:
-                rows = conn.execute(sql, params).fetchall()
-                fts_results = [row_to_symbol(row) for row in rows]
-            except sqlite3.OperationalError:
-                pass  # Fall through to LIKE
-
-        # LIKE fallback if FTS5 returned nothing
+        # LIKE fallback on name/qualified_name/signature
         if not fts_results:
             terms = query.split()
             if terms:
                 sql = "SELECT * FROM symbols WHERE 1=1"
-                params = []
+                params: list = []
                 for term in terms:
-                    sql += " AND (name LIKE ? OR qualified_name LIKE ? OR docstring LIKE ?)"
+                    sql += (
+                        " AND (name LIKE ? OR qualified_name LIKE ?"
+                        " OR signature LIKE ?)"
+                    )
                     params.extend([f"%{term}%", f"%{term}%", f"%{term}%"])
                 if symbol_type:
                     sql += " AND symbol_type = ?"
@@ -625,17 +651,33 @@ def _search_core(
                 rows = conn.execute(sql, params).fetchall()
                 fts_results = [row_to_symbol(row) for row in rows]
 
+        fts_results.sort(key=_dunder_sort_key)
+
         if len(fts_results) >= limit:
-            fts_results.sort(key=_dunder_sort_key)
             return SearchResult(fts_results=fts_results)
 
-        # Phase 2: fuzzy fallback
+        # --- Phase 2: approximate (docstring FTS + rapidfuzz) ------
         remaining = limit - len(fts_results)
         seen = {r.qualified_name for r in fts_results}
-        fuzzy_results = _fuzzy_search(query, conn, remaining, symbol_type, seen)
-        fts_results.sort(key=_dunder_sort_key)
-        fuzzy_results.sort(key=_dunder_sort_key)
-        return SearchResult(fts_results=fts_results, fuzzy_results=fuzzy_results)
+
+        docstring_results: list[Symbol] = []
+        if fts_query:
+            docstring_results = _fts_query_col(
+                fts_query, "{docstring}",
+                conn, remaining, symbol_type, seen,
+            )
+            seen.update(r.qualified_name for r in docstring_results)
+            remaining -= len(docstring_results)
+
+        fuzzy_results: list[Symbol] = []
+        if remaining > 0:
+            fuzzy_results = _fuzzy_search(
+                query, conn, remaining, symbol_type, seen,
+            )
+
+        approx = docstring_results + fuzzy_results
+        approx.sort(key=_dunder_sort_key)
+        return SearchResult(fts_results=fts_results, fuzzy_results=approx)
 
 
 def search(
