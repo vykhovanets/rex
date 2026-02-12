@@ -1,0 +1,15 @@
+{
+  "name": "rex",
+  "owner": {
+    "name": "Anton Vykhovanets",
+    "url": "https://github.com/vykhovanets"
+  },
+  "plugins": [
+    {
+      "name": "rex",
+      "source": "./",
+      "description": "Sub-second Python symbol search for .venv packages",
+      "version": "0.1.0"
+    }
+  ]
+}
