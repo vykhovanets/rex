@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import os
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
@@ -175,14 +176,16 @@ class ASTExtractor(ast.NodeVisitor):
                 return_annotation=return_annotation,
             )
         )
-        # Don't recurse into nested functions for now
+
 
 
 def parse_file(file_path: Path, module_name: str) -> list[Symbol]:
     """Parse a Python file and extract all symbols."""
     try:
         source = file_path.read_text(encoding="utf-8", errors="replace")
-        tree = ast.parse(source, filename=str(file_path))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SyntaxWarning)
+            tree = ast.parse(source, filename=str(file_path))
     except (SyntaxError, ValueError):
         return []
 
@@ -253,17 +256,35 @@ def find_site_packages(venv: Path) -> Path | None:
 _SKIP_SUFFIXES = {".dist-info", ".egg-info", ".so", ".pyd", ".pth"}
 
 
+def _has_python_content(directory: Path) -> bool:
+    """Check if directory has Python content (namespace package heuristic).
+
+    Checks one level deep for .py/.pyi files or subdirs with __init__.py.
+    """
+    for child in directory.iterdir():
+        if child.is_file() and child.suffix in (".py", ".pyi"):
+            return True
+        if child.is_dir() and (child / "__init__.py").exists():
+            return True
+    return False
+
+
 def _is_package(entry: Path) -> tuple[str, Path] | None:
     """Check if a directory entry is a Python package or module.
 
     Returns (name, path) or None.
+    Recognizes both regular packages (__init__.py) and
+    namespace packages (PEP 420 — no __init__.py).
     """
     if entry.name.startswith(("_", ".")):
         return None
     if entry.suffix in _SKIP_SUFFIXES:
         return None
-    if entry.is_dir() and (entry / "__init__.py").exists():
-        return entry.name, entry
+    if entry.is_dir():
+        if (entry / "__init__.py").exists():
+            return entry.name, entry
+        if _has_python_content(entry):
+            return entry.name, entry
     if entry.suffix == ".py":
         return entry.stem, entry
     return None
@@ -323,7 +344,7 @@ def index_package(package_name: str, package_path: Path) -> Iterator[Symbol]:
         rel_path = file_path.relative_to(package_path.parent)
         parts = list(rel_path.parts)
 
-        if parts[-1] == "__init__.py":
+        if parts[-1] in ("__init__.py", "__init__.pyi"):
             parts = parts[:-1]
         else:
             parts[-1] = Path(parts[-1]).stem  # Remove .py/.pyi
@@ -363,12 +384,12 @@ def index_directory(directory: Path) -> Iterator[Symbol]:
         rel_path = file_path.relative_to(directory)
         parts = list(rel_path.parts)
 
-        if parts[-1] == "__init__.py":
+        if parts[-1] in ("__init__.py", "__init__.pyi"):
             parts = parts[:-1]
             if not parts:
                 continue
         else:
-            parts[-1] = parts[-1][:-3]  # Remove .py
+            parts[-1] = Path(parts[-1]).stem  # Remove .py/.pyi
 
         module_name = ".".join(parts)
         yield from parse_file(file_path, module_name)
