@@ -1,16 +1,13 @@
 """MCP server exposing rex functionality to Claude Code.
 
 Usage:
-    uv run rex-mcp install   # Register with Claude Code
-    uv run rex-mcp uninstall # Remove registration
-    uv run rex-mcp serve     # Run server (called by Claude Code)
+    uv tool install git+https://github.com/vykhovanets/rex.git
+    claude mcp add rex -s user -- rex-mcp serve
 """
 
 from __future__ import annotations
 
-import json
 import sys
-from pathlib import Path
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -148,84 +145,17 @@ async def run_server():
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
 
-# =============================================================================
-# CLI for install/uninstall
-# =============================================================================
-
-
-def get_mcp_json_path() -> Path:
-    """Get project's .mcp.json path."""
-    return Path.cwd() / ".mcp.json"
-
-
-def load_mcp_json() -> dict:
-    """Load existing .mcp.json or return empty dict."""
-    path = get_mcp_json_path()
-    if path.exists():
-        return json.loads(path.read_text())
-    return {}
-
-
-def save_mcp_json(config: dict) -> None:
-    """Save .mcp.json file."""
-    path = get_mcp_json_path()
-    path.write_text(json.dumps(config, indent=2) + "\n")
-
-
-def install() -> None:
-    """Register rex MCP server in project's .mcp.json."""
-    config = load_mcp_json()
-
-    if "mcpServers" not in config:
-        config["mcpServers"] = {}
-
-    config["mcpServers"]["rex"] = {
-        "command": "rex-mcp",
-        "args": ["serve"],
-    }
-
-    save_mcp_json(config)
-    print(f"\u2713 Registered rex MCP server in {get_mcp_json_path()}")
-    print("  Restart Claude Code to activate.")
-    print("  Note: Project MCP servers require approval on first use.")
-
-
-def uninstall() -> None:
-    """Remove rex MCP server registration."""
-    config = load_mcp_json()
-
-    if "mcpServers" in config and "rex" in config["mcpServers"]:
-        del config["mcpServers"]["rex"]
-        if not config["mcpServers"]:
-            del config["mcpServers"]
-        save_mcp_json(config)
-        print("\u2713 Removed rex MCP server registration.")
-    else:
-        print("rex MCP server not registered.")
-
-
 def main() -> None:
-    """CLI entry point."""
+    """CLI entry point — only 'serve' is needed."""
     import asyncio
 
-    if len(sys.argv) < 2:
-        print("Usage: rex-mcp <command>")
-        print("Commands:")
-        print("  install   - Register with Claude Code")
-        print("  uninstall - Remove registration")
-        print("  serve     - Run MCP server")
-        sys.exit(1)
-
-    cmd = sys.argv[1]
-
-    if cmd == "install":
-        install()
-    elif cmd == "uninstall":
-        uninstall()
-    elif cmd == "serve":
+    if len(sys.argv) > 1 and sys.argv[1] == "serve":
         asyncio.run(run_server())
     else:
-        print(f"Unknown command: {cmd}")
+        print("Usage: rex-mcp serve")
+        print()
+        print("Register with Claude Code:")
+        print("  claude mcp add rex -s user -- rex-mcp serve")
         sys.exit(1)
 
 

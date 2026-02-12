@@ -9,26 +9,9 @@ and project source code.
 
 ## Install
 
-Global (available everywhere):
-
 ```bash
 uv tool install git+https://github.com/vykhovanets/rex.git
-rex index                       # Index .venv packages (~30s once)
-rex index -p ./src              # Also index project source
-```
-
-As project dependency:
-
-```bash
-uv add git+https://github.com/vykhovanets/rex.git
-uv run rex index
-```
-
-MCP server for Claude Code:
-
-```bash
-claude mcp add rex -- \
-  uvx --from git+https://github.com/vykhovanets/rex.git rex-mcp serve
+claude mcp add rex -s user -- rex-mcp serve
 ```
 
 ## How it works
