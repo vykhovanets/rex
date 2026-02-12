@@ -1,6 +1,8 @@
 {
-  "rex": {
-    "command": "rex-mcp",
-    "args": ["serve"]
+  "mcpServers": {
+    "rex": {
+      "command": "rex-mcp",
+      "args": ["serve"]
+    }
   }
 }

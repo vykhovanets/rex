@@ -45,6 +45,7 @@ packages = ["src/rex"]
 
 [dependency-groups]
 dev = [
+    "mlx>=0.30.6",
     "pytest>=9.0.2",
     "rerun-sdk[datafusion]>=0.29.1",
 ]

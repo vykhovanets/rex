@@ -20,7 +20,8 @@ Rex stores a single global index at
 `~/.local/state/rex/rex.db`. Indexing is **incremental** —
 only packages whose files changed since the last run are
 re-indexed. First run takes ~30s; subsequent runs are
-instant.
+instant. Project source code is indexed automatically when
+a `pyproject.toml` or `setup.py` is detected.
 
 Search has three phases:
 1. **FTS5** — exact and prefix matches via SQLite full-text
@@ -41,7 +42,7 @@ rex members <name>     # List class/module members
 rex stats              # Index statistics
 rex index              # Build/update index
 rex index -f           # Force full rebuild
-rex index -p ./src     # Also index project source
+rex index -p ./lib     # Also index extra directories
 rex clean              # Remove stale packages
 ```
 
