@@ -56,8 +56,6 @@ round-trips to the web.
 | `rex_show`    | Full docs for a symbol        |
 | `rex_members` | List class/module members     |
 
-![example](./example.jpg)
-
 ## License
 
 Apache-2.0
