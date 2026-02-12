@@ -4,12 +4,29 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import click
 import typer
 
 from .api import format_symbol_detail, format_symbol_line, search_suggestion, show_symbol
 from .storage import build_index, clean_index, get_members, get_stats, search
 
-app = typer.Typer(no_args_is_help=True, add_completion=False)
+
+class _DefaultFind(typer.core.TyperGroup):
+    """Treat unrecognized commands as `find` queries."""
+
+    def resolve_command(self, ctx: click.Context, args: list[str]):  # type: ignore[override]
+        try:
+            return super().resolve_command(ctx, args)
+        except click.UsageError:
+            return super().resolve_command(ctx, ["find"] + args)
+
+
+app = typer.Typer(
+    cls=_DefaultFind,
+    no_args_is_help=True,
+    add_completion=False,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
 
 # ANSI styling
 DIM = "\033[2m"
