@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import click
@@ -32,7 +33,48 @@ app = typer.Typer(
 DIM = "\033[2m"
 BOLD = "\033[1m"
 CYAN = "\033[36m"
+ITALIC = "\033[3m"
+BLUE_ITALIC = "\033[3;34m"
 RESET = "\033[0m"
+
+# Matches `: type_annotation` and `= default_value` inside param lists
+_ANNOTATION = re.compile(r"(:\s*)([^,)=]+)")
+_DEFAULT = re.compile(r"(=\s*)([^,)]+)")
+
+
+def _style_sig(sig: str) -> str:
+    """Colorize a signature: parens cyan, types dim, -> cyan, ... cyan."""
+    if not sig:
+        return sig
+
+    # Pop trailing truncation marker
+    truncated = sig.endswith("...")
+    if truncated:
+        sig = sig[:-3]
+
+    parts = sig.split(" -> ", 1)
+    params = parts[0]
+
+    # Dim type annotations and default values
+    params = _ANNOTATION.sub(
+        lambda m: DIM + m.group(1) + m.group(2) + RESET, params,
+    )
+    params = _DEFAULT.sub(
+        lambda m: DIM + m.group(1) + m.group(2) + RESET, params,
+    )
+
+    # Cyan braces
+    params = params.replace("(", f"{CYAN}({RESET}")
+    params = params.replace(")", f"{CYAN}){RESET}")
+
+    result = params
+    if len(parts) > 1:
+        result += f" {CYAN}->{RESET} {DIM}{parts[1]}{RESET}"
+
+    if truncated:
+        result += f"{CYAN}...{RESET}"
+
+    return result
 
 
 @app.command()
@@ -74,7 +116,7 @@ def find(
 
     hint = search_suggestion(query_str, result)
     if hint:
-        typer.echo(f"{DIM}{hint}{RESET}", err=True)
+        typer.echo(f"{BLUE_ITALIC}{hint}{RESET}", err=True)
 
     if not result.symbols:
         raise typer.Exit(1)
@@ -85,12 +127,13 @@ def find(
         typer.echo(format_symbol_detail(hit))
         return
 
-    for sym in result.symbols:
+    for i, sym in enumerate(result.symbols, 1):
         sig = sym.signature or ""
         if len(sig) > 50:
             sig = sig[:47] + "..."
-        typer.echo(f"{DIM}{sym.symbol_type:8}{RESET} {BOLD}{sym.name}{RESET}{CYAN}{sig}{RESET}")
-        typer.echo(f"{sym.file_path}:{sym.line_no}")
+        styled = _style_sig(sig)
+        typer.echo(f"{ITALIC}{i:2}.{RESET} {DIM}{sym.symbol_type:8}{RESET} {BOLD}{sym.name}{RESET}{styled}")
+        typer.echo(f"    {DIM}{sym.file_path}:{sym.line_no}{RESET}")
 
 
 @app.command()
