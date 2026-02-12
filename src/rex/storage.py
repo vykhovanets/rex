@@ -613,26 +613,50 @@ def _fts_query_col(
     return results
 
 
+def _exact_name_search(
+    query: str,
+    conn: sqlite3.Connection,
+    limit: int,
+    symbol_type: str | None,
+) -> list[Symbol]:
+    """Exact name match — highest priority, uses idx_symbols_name."""
+    sql = "SELECT * FROM symbols WHERE name = ?"
+    params: list = [query]
+    if symbol_type:
+        sql += " AND symbol_type = ?"
+        params.append(symbol_type)
+    sql += " LIMIT ?"
+    params.append(limit)
+    return [row_to_symbol(row) for row in conn.execute(sql, params).fetchall()]
+
+
 def _search_core(
     query: str,
     limit: int,
     symbol_type: str | None,
     db_path: Path,
 ) -> SearchResult:
-    """Phase 1 (name/qname FTS + LIKE) + Phase 2 (docstring + fuzzy)."""
+    """Phase 0 (exact name) + Phase 1 (FTS + LIKE) + Phase 2 (docstring + fuzzy)."""
     with get_connection(db_path) as conn:
         fts_query = _sanitize_fts_query(query)
-        fts_results: list[Symbol] = []
 
-        # --- Phase 1: exact matches (name / qualified_name) --------
-        if fts_query:
+        # --- Phase 0: exact name match (highest priority) ----------
+        exact_results = _exact_name_search(query, conn, limit, symbol_type)
+        seen = {r.qualified_name for r in exact_results}
+        remaining = limit - len(exact_results)
+
+        # --- Phase 1: FTS on name/qualified_name -------------------
+        fts_results: list[Symbol] = []
+        if fts_query and remaining > 0:
             fts_results = _fts_query_col(
                 fts_query, "{name qualified_name}",
-                conn, limit, symbol_type,
+                conn, remaining, symbol_type, seen,
             )
+            seen.update(r.qualified_name for r in fts_results)
+            remaining -= len(fts_results)
 
         # LIKE fallback on name/qualified_name/signature
-        if not fts_results:
+        if not exact_results and not fts_results:
             terms = query.split()
             if terms:
                 sql = "SELECT * FROM symbols WHERE 1=1"
@@ -650,16 +674,17 @@ def _search_core(
                 params.append(limit)
                 rows = conn.execute(sql, params).fetchall()
                 fts_results = [row_to_symbol(row) for row in rows]
+                seen.update(r.qualified_name for r in fts_results)
+                remaining = limit - len(exact_results) - len(fts_results)
 
+        exact_results.sort(key=_dunder_sort_key)
         fts_results.sort(key=_dunder_sort_key)
+        all_fts = exact_results + fts_results
 
-        if len(fts_results) >= limit:
-            return SearchResult(fts_results=fts_results)
+        if remaining <= 0:
+            return SearchResult(fts_results=all_fts)
 
         # --- Phase 2: approximate (docstring FTS + rapidfuzz) ------
-        remaining = limit - len(fts_results)
-        seen = {r.qualified_name for r in fts_results}
-
         docstring_results: list[Symbol] = []
         if fts_query:
             docstring_results = _fts_query_col(
@@ -677,7 +702,7 @@ def _search_core(
 
         approx = docstring_results + fuzzy_results
         approx.sort(key=_dunder_sort_key)
-        return SearchResult(fts_results=fts_results, fuzzy_results=approx)
+        return SearchResult(fts_results=all_fts, fuzzy_results=approx)
 
 
 def search(
