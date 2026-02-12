@@ -98,6 +98,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             msg = hint or f"No symbols found for: {query}"
             return [TextContent(type="text", text=msg)]
 
+        # Single exact match among fuzzy noise → auto-show detail
+        hit = result.unique_exact
+        if hit:
+            return [TextContent(type="text", text=format_symbol_detail(hit))]
+
         output = []
         hint = search_suggestion(query, result)
         if hint:

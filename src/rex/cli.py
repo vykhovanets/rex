@@ -62,6 +62,12 @@ def find(
     if not result.symbols:
         raise typer.Exit(1)
 
+    # Single exact match among fuzzy noise → auto-show detail
+    hit = result.unique_exact
+    if hit:
+        typer.echo(format_symbol_detail(hit))
+        return
+
     for sym in result.symbols:
         sig = sym.signature or ""
         if len(sig) > 50:

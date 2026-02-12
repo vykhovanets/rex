@@ -19,7 +19,6 @@ from .indexer import (
     find_venv,
     index_directory,
     index_package,
-    index_site_packages,
     iter_packages,
     iter_py_files,
 )
@@ -41,6 +40,20 @@ class SearchResult:
     def fuzzy_only(self) -> bool:
         """True when results exist but all came from fuzzy."""
         return not self.fts_results and bool(self.fuzzy_results)
+
+    @property
+    def unique_exact(self) -> Symbol | None:
+        """Single exact match among fuzzy noise — worth auto-showing."""
+        found = None
+        for s in self.fts_results:
+            for o in self.fts_results:
+                if o is not s and s.qualified_name.startswith(o.qualified_name + "."):
+                    break
+            else:
+                if found is not None:
+                    return None
+                found = s
+        return found
 
 
 def get_db_path() -> Path:

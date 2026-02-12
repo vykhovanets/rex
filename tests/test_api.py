@@ -284,3 +284,45 @@ class TestSearchSuggestion:
         assert "uv add" in hint
         # Should not guess the package name from the query
         assert "nonexistentpkg" not in hint
+
+
+# ---------------------------------------------------------------------------
+# E) unique_exact — auto-show on single exact match
+# ---------------------------------------------------------------------------
+
+
+class TestUniqueExact:
+    """SearchResult.unique_exact -> Symbol | None
+
+    When there is exactly one FTS5 (exact) match plus fuzzy results,
+    the user clearly wanted that exact symbol.  unique_exact exposes it
+    so CLI/MCP can auto-show the detail view.
+    """
+
+    def test_one_fts_plus_fuzzy_returns_symbol(self):
+        exact = _make_symbol(name="BaseModel", qualified_name="pydantic.main.BaseModel")
+        fuzzy1 = _make_symbol(name="BasModel", qualified_name="other.BasModel")
+        fuzzy2 = _make_symbol(name="BaseModule", qualified_name="other.BaseModule")
+        result = SearchResult(fts_results=[exact], fuzzy_results=[fuzzy1, fuzzy2])
+        assert result.unique_exact is exact
+
+    def test_multiple_fts_returns_none(self):
+        a = _make_symbol(name="BaseModel", qualified_name="pydantic.main.BaseModel")
+        b = _make_symbol(name="BaseModel", qualified_name="other.BaseModel")
+        fuzzy = _make_symbol(name="BasModel", qualified_name="x.BasModel")
+        result = SearchResult(fts_results=[a, b], fuzzy_results=[fuzzy])
+        assert result.unique_exact is None
+
+    def test_one_fts_no_fuzzy_returns_symbol(self):
+        exact = _make_symbol(name="BaseModel", qualified_name="pydantic.main.BaseModel")
+        result = SearchResult(fts_results=[exact], fuzzy_results=[])
+        assert result.unique_exact is exact
+
+    def test_no_results_returns_none(self):
+        result = SearchResult()
+        assert result.unique_exact is None
+
+    def test_fuzzy_only_returns_none(self):
+        fuzzy = _make_symbol(name="BasModel", qualified_name="x.BasModel")
+        result = SearchResult(fts_results=[], fuzzy_results=[fuzzy])
+        assert result.unique_exact is None
