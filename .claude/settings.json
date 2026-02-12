@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "rex": {
+      "command": "uv",
+      "args": [
+        "run",
+        "rex-mcp",
+        "serve"
+      ]
+    }
+  }
+}

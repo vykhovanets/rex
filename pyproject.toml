@@ -1,14 +1,36 @@
 [project]
-name = "rex"
+name = "rex-index"
 version = "0.1.0"
 description = "Fast Python symbol search for .venv packages"
+readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.12"
+authors = [
+    { name = "Anton Vykhovanets" },
+]
+keywords = ["python", "search", "symbols", "documentation", "mcp", "venv"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Software Development :: Documentation",
+]
 dependencies = [
     "typer>=0.15",
     "rich>=13.0",
     "mcp>=1.0",
     "rapidfuzz>=3.14.3",
 ]
+
+[project.urls]
+Homepage = "https://github.com/vykhovanets/rex"
+Repository = "https://github.com/vykhovanets/rex"
 
 [project.scripts]
 rex = "rex.cli:main"

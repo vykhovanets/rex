@@ -10,7 +10,7 @@ and project source code.
 ## Install
 
 ```bash
-uv tool install git+https://github.com/vykhovanets/rex.git
+uv tool install rex-index
 claude mcp add rex -s user -- rex-mcp serve
 ```
 
@@ -60,4 +60,4 @@ round-trips to the web.
 
 ## License
 
-MIT
+Apache-2.0

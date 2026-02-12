@@ -1,7 +1,7 @@
 """MCP server exposing rex functionality to Claude Code.
 
 Usage:
-    uv tool install git+https://github.com/vykhovanets/rex.git
+    uv tool install rex-index
     claude mcp add rex -s user -- rex-mcp serve
 """
 
@@ -44,7 +44,7 @@ async def list_tools() -> list[Tool]:
                     },
                     "symbol_type": {
                         "type": "string",
-                        "description": "Filter by symbol type (class, function, method, module)",
+                        "description": "Filter by symbol type (class, function, method, module, async_function, async_method)",
                     },
                 },
                 "required": ["query"],
