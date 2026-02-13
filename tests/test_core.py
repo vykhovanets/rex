@@ -11,6 +11,7 @@ from rex.api import show_symbol
 from rex.indexer import Symbol, find_site_packages, find_venv, parse_file
 from rex.storage import (
     SearchResult,
+    _sanitize_fts_query,
     build_index,
     clean_index,
     get_db_path,
@@ -424,3 +425,42 @@ class TestBugRegressions:
         """Dotted query that won't match a class should fall back gracefully."""
         result = search("SomeNonexistentClass.method", db_path_fn=indexed_db)
         assert isinstance(result, SearchResult)
+
+    def test_dot_in_query_no_fts_syntax_error(self, indexed_db):
+        """Dots must not cause FTS5 syntax errors (dot = column accessor)."""
+        result = search("pydantic.BaseModel", db_path_fn=indexed_db)
+        assert isinstance(result, SearchResult)
+        assert len(result.symbols) > 0
+        assert not result.fuzzy_only, "should resolve via qname, not fuzzy"
+
+    def test_dotted_search_resolves_package_symbol(self, indexed_db):
+        """'pydantic.BaseModel' should resolve to the exact symbol."""
+        result = search("pydantic.BaseModel", db_path_fn=indexed_db)
+        assert result.symbols[0].name == "BaseModel"
+        assert result.symbols[0].qualified_name.startswith("pydantic.")
+
+
+# ---------------------------------------------------------------------------
+# D) FTS query sanitization
+# ---------------------------------------------------------------------------
+
+
+class TestSanitizeFtsQuery:
+    def test_dots_split_into_tokens(self):
+        assert _sanitize_fts_query("mlx.ones") == "mlx* ones*"
+
+    def test_underscores_split_into_tokens(self):
+        assert _sanitize_fts_query("base_model") == "base* model*"
+
+    def test_dots_and_underscores_combined(self):
+        assert _sanitize_fts_query("mlx.tree_map") == "mlx* tree* map*"
+
+    def test_plain_query_unchanged(self):
+        assert _sanitize_fts_query("BaseModel") == "BaseModel*"
+
+    def test_fts_operators_stripped(self):
+        result = _sanitize_fts_query("base+model")
+        assert "+" not in result
+
+    def test_empty_returns_empty(self):
+        assert _sanitize_fts_query("") == ""

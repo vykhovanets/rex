@@ -557,7 +557,7 @@ def _sanitize_fts_query(query: str) -> str:
     for term in terms:
         # Remove FTS5 special characters
         clean = _FTS5_SPECIAL.sub(" ", term)
-        subtokens = clean.replace("_", " ").split()
+        subtokens = clean.replace("_", " ").replace(".", " ").split()
         for subtoken in subtokens:
             subtoken = subtoken.strip()
             if subtoken:
@@ -718,12 +718,22 @@ def search(
     db_path = ensure_db(db_path_fn)
     refresh_index(db_path_fn)
 
-    # Handle "Class.method" style queries — try inheritance search first,
-    # but fall through to normal search if it returns nothing
+    # Handle dotted queries: "mlx.ones", "pydantic.BaseModel", etc.
     if "." in query:
+        # Try Class.method inheritance search
         results = _search_with_inheritance(query, db_path, limit)
         if results:
             return SearchResult(fts_results=results)
+
+        # Try qualified name resolution (package.symbol)
+        with get_connection(db_path) as conn:
+            qname = _resolve_qualified_name(query, conn)
+            if qname:
+                row = conn.execute(
+                    "SELECT * FROM symbols WHERE qualified_name = ?", (qname,)
+                ).fetchone()
+                if row:
+                    return SearchResult(fts_results=[row_to_symbol(row)])
 
     return _search_core(query, limit, symbol_type, db_path)
 
