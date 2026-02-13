@@ -7,22 +7,35 @@ and project source code.
 *Bonus*: MCP server for
 [Claude Code](https://github.com/anthropics/claude-code).
 
-## Install as Claude Code plugin
+## Install
+
+### Claude Code plugin
 
 ```bash
 claude plugin marketplace add vykhovanets/rex
 claude plugin install rex@rex
 ```
 
-This gives you MCP tools + SKILL.md (auto-approved
-tools, usage guidance).
+MCP tools + SKILL.md with usage guidance.
 
-### Alternative: MCP-only
+### CLI + MCP
 
 ```bash
 uv tool install rex-index
 claude mcp add rex -s user -- rex-mcp serve
 ```
+
+Rex available in every project, no per-project setup.
+
+### Project dependency
+
+```bash
+uv add rex-index
+uv run rex init-mcp
+```
+
+Adds Rex to `.mcp.json` with pre-approved tools.
+Commit both files — your team gets Rex on `uv sync`.
 
 ## How it works
 
@@ -54,6 +67,7 @@ rex index              # Build/update index
 rex index -f           # Force full rebuild
 rex index -p ./lib     # Also index extra directories
 rex clean              # Remove stale packages
+rex init-mcp           # Register MCP in .mcp.json
 ```
 
 ## MCP Tools

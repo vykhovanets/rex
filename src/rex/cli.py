@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -198,6 +199,45 @@ def clean() -> None:
         typer.echo(f"Cleaned {len(removed)} stale packages")
     else:
         typer.echo("No stale packages found")
+
+
+_REX_MCP_KEY = "rex"
+_REX_MCP_CONFIG = {
+    "command": "uv",
+    "args": ["run", "rex-mcp", "serve"],
+    "autoApprove": ["rex_find", "rex_show", "rex_members"],
+}
+
+
+@app.command("init-mcp")
+def init_mcp(
+    path: Path = typer.Option(".", "-p", "--path", help="Project root with .mcp.json"),
+) -> None:
+    """Register Rex MCP server in project .mcp.json with pre-approved tools."""
+    mcp_path = path.resolve() / ".mcp.json"
+
+    if mcp_path.exists():
+        data = json.loads(mcp_path.read_text())
+        servers = data.get("mcpServers", {})
+
+        if _REX_MCP_KEY in servers:
+            existing = servers[_REX_MCP_KEY]
+            if existing == _REX_MCP_CONFIG:
+                typer.echo("Rex MCP already configured — nothing to do.")
+                raise typer.Exit(0)
+            # Update existing rex entry to latest config
+            servers[_REX_MCP_KEY] = _REX_MCP_CONFIG
+            typer.echo("Updated Rex MCP config in .mcp.json")
+        else:
+            servers[_REX_MCP_KEY] = _REX_MCP_CONFIG
+            typer.echo("Added Rex MCP to existing .mcp.json")
+
+        data["mcpServers"] = servers
+    else:
+        data = {"mcpServers": {_REX_MCP_KEY: _REX_MCP_CONFIG}}
+        typer.echo("Created .mcp.json with Rex MCP")
+
+    mcp_path.write_text(json.dumps(data, indent=2) + "\n")
 
 
 def main() -> None:
