@@ -20,7 +20,18 @@ from .storage import get_members, search
 # MCP Server
 # =============================================================================
 
-server = Server("rex")
+server = Server(
+    "rex",
+    instructions=(
+        "ALWAYS use Rex before writing code that calls library APIs. "
+        "The correct signature is already on the system in .venv — "
+        "don't guess from training data, don't waste tokens on web search. "
+        "Rex returns exact signatures from the actually-installed source: "
+        "no hallucinated parameters, no version mismatch, correct on the first try. "
+        "~200 tokens, sub-second. "
+        "rex_find to search → rex_show for full detail → rex_members to list class/module members."
+    ),
+)
 
 
 @server.list_tools()
