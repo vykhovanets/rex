@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import tomllib
 from pathlib import Path
 
 import click
@@ -207,13 +208,57 @@ _REX_MCP_CONFIG = {
     "args": ["run", "rex-mcp", "serve"],
     "autoApprove": ["rex_find", "rex_show", "rex_members"],
 }
+_REX_CODEX_CONFIG = {
+    "command": "uv",
+    "args": ["run", "rex-mcp", "serve"],
+    "enabled_tools": ["rex_find", "rex_show", "rex_members"],
+}
 
 
-@app.command("init-mcp")
-def init_mcp(
-    path: Path = typer.Option(".", "-p", "--path", help="Project root with .mcp.json"),
-) -> None:
-    """Register Rex MCP server in project .mcp.json with pre-approved tools."""
+def _toml_value(v: object) -> str:
+    """Format a Python value as a TOML literal."""
+    if isinstance(v, str):
+        return f'"{v}"'
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, list):
+        return "[" + ", ".join(_toml_value(i) for i in v) + "]"
+    msg = f"unsupported TOML type: {type(v)}"
+    raise TypeError(msg)
+
+
+def _dump_toml(data: dict, _prefix: str = "") -> str:
+    """Minimal TOML serializer for simple nested configs."""
+    lines: list[str] = []
+    nested: list[tuple[str, dict]] = []
+
+    for key, value in data.items():
+        if isinstance(value, dict):
+            nested.append((f"{_prefix}{key}", value))
+        else:
+            lines.append(f"{key} = {_toml_value(value)}")
+
+    for path, section in nested:
+        has_subtables = any(isinstance(v, dict) for v in section.values())
+        if has_subtables:
+            sub = _dump_toml(section, f"{path}.")
+            if lines:
+                lines.append("")
+            lines.append(sub.rstrip())
+        else:
+            if lines:
+                lines.append("")
+            lines.append(f"[{path}]")
+            for k, v in section.items():
+                lines.append(f"{k} = {_toml_value(v)}")
+
+    return "\n".join(lines) + "\n"
+
+
+def _init_claude_mcp(path: Path) -> None:
+    """Register Rex in .mcp.json (Claude Code)."""
     mcp_path = path.resolve() / ".mcp.json"
 
     if mcp_path.exists():
@@ -221,16 +266,14 @@ def init_mcp(
         servers = data.get("mcpServers", {})
 
         if _REX_MCP_KEY in servers:
-            existing = servers[_REX_MCP_KEY]
-            if existing == _REX_MCP_CONFIG:
-                typer.echo("Rex MCP already configured — nothing to do.")
-                raise typer.Exit(0)
-            # Update existing rex entry to latest config
+            if servers[_REX_MCP_KEY] == _REX_MCP_CONFIG:
+                typer.echo("Rex already configured in .mcp.json")
+                return
             servers[_REX_MCP_KEY] = _REX_MCP_CONFIG
-            typer.echo("Updated Rex MCP config in .mcp.json")
+            typer.echo("Updated Rex config in .mcp.json")
         else:
             servers[_REX_MCP_KEY] = _REX_MCP_CONFIG
-            typer.echo("Added Rex MCP to existing .mcp.json")
+            typer.echo("Added Rex to existing .mcp.json")
 
         data["mcpServers"] = servers
     else:
@@ -238,6 +281,43 @@ def init_mcp(
         typer.echo("Created .mcp.json with Rex MCP")
 
     mcp_path.write_text(json.dumps(data, indent=2) + "\n")
+
+
+def _init_codex_config(path: Path) -> None:
+    """Register Rex in .codex/config.toml (Codex CLI)."""
+    codex_dir = path.resolve() / ".codex"
+    config_path = codex_dir / "config.toml"
+
+    if config_path.exists():
+        data = tomllib.loads(config_path.read_text())
+        servers = data.get("mcp_servers", {})
+
+        if _REX_MCP_KEY in servers:
+            if servers[_REX_MCP_KEY] == _REX_CODEX_CONFIG:
+                typer.echo("Rex already configured in .codex/config.toml")
+                return
+            servers[_REX_MCP_KEY] = _REX_CODEX_CONFIG
+            typer.echo("Updated Rex config in .codex/config.toml")
+        else:
+            servers[_REX_MCP_KEY] = _REX_CODEX_CONFIG
+            typer.echo("Added Rex to existing .codex/config.toml")
+
+        data["mcp_servers"] = servers
+    else:
+        codex_dir.mkdir(parents=True, exist_ok=True)
+        data = {"mcp_servers": {_REX_MCP_KEY: _REX_CODEX_CONFIG}}
+        typer.echo("Created .codex/config.toml with Rex MCP")
+
+    config_path.write_text(_dump_toml(data))
+
+
+@app.command("init-mcp")
+def init_mcp(
+    path: Path = typer.Option(".", "-p", "--path", help="Project root"),
+) -> None:
+    """Register Rex MCP server for Claude Code and Codex CLI."""
+    _init_claude_mcp(path)
+    _init_codex_config(path)
 
 
 def main() -> None:
