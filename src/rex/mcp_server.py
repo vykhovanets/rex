@@ -48,7 +48,7 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Search query (e.g., 'from_pretrained', 'Sam3Processor')",
+                        "description": "Search query by symbol name (e.g., 'from_pretrained', 'Sam3Processor')",
                     },
                     "limit": {
                         "type": "integer",

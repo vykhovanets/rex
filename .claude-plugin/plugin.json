@@ -1,6 +1,6 @@
 {
   "name": "rex",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Sub-second Python symbol search for .venv packages. Find classes, functions, methods by name — faster than web search or grepping .venv.",
   "author": {
     "name": "Anton Vykhovanets",

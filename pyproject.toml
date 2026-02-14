@@ -1,6 +1,6 @@
 [project]
 name = "rex-index"
-version = "0.1.5"
+version = "0.1.6"
 description = "Fast Python symbol search for .venv packages"
 readme = "README.md"
 license = "Apache-2.0"
