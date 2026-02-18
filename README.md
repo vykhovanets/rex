@@ -16,6 +16,15 @@ claude plugin marketplace add vykhovanets/rex
 claude plugin install rex@rex
 ```
 
+To update to the latest version:
+
+```bash
+claude plugin uninstall rex@rex
+claude plugin marketplace remove rex
+claude plugin marketplace add vykhovanets/rex
+claude plugin install rex@rex
+```
+
 MCP tools + SKILL.md with usage guidance.
 
 ### CLI + MCP
