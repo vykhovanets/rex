@@ -55,10 +55,11 @@ re-indexed. First run takes ~30s; subsequent runs are
 instant. Project source code is indexed automatically when
 a `pyproject.toml` or `setup.py` is detected.
 
-Search has three phases:
-1. **FTS5** — exact and prefix matches via SQLite full-text
-2. **Fuzzy** — typo-tolerant fallback (rapidfuzz)
-3. **Auto-reindex** — if nothing found and index is stale
+Search pipeline:
+1. **Auto-reindex** — stale packages refreshed before search
+2. **Exact + FTS5** — exact name, then full-text on name/qname
+3. **LIKE fallback** — substring match when FTS misses
+4. **Fuzzy** — typo-tolerant approximation (rapidfuzz)
 
 When results are fuzzy-only or empty, rex shows a
 contextual hint (e.g. "approximate matches" or

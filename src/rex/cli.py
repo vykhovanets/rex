@@ -205,12 +205,12 @@ def clean() -> None:
 _REX_MCP_KEY = "rex"
 _REX_MCP_CONFIG = {
     "command": "uv",
-    "args": ["run", "rex-mcp", "serve"],
+    "args": ["run", "rex-mcp", "serve", "${PWD}"],
     "autoApprove": ["rex_find", "rex_show", "rex_members"],
 }
 _REX_CODEX_CONFIG = {
     "command": "uv",
-    "args": ["run", "rex-mcp", "serve"],
+    "args": ["run", "rex-mcp", "serve", "${PWD}"],
     "enabled_tools": ["rex_find", "rex_show", "rex_members"],
 }
 
