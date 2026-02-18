@@ -441,23 +441,17 @@ def clean_index(db_path_fn: Callable[[], Path] = get_db_path) -> list[str]:
 
 
 def ensure_db(db_path_fn: Callable[[], Path] = get_db_path) -> Path:
-    """Return DB path, building index if DB doesn't exist yet."""
-    db_path = db_path_fn()
-    if not db_path.exists():
-        build_index(db_path_fn=db_path_fn)
-    return db_path
+    """Return DB path, building index from scratch or refreshing if stale.
 
-
-def refresh_index(db_path_fn: Callable[[], Path] = get_db_path) -> bool:
-    """Check if index is stale and rebuild if needed.
-
-    Auto-detects venv and project dirs from DB + cwd.
-    Returns True if reindexing happened.
+    Single entry point for all queries — guarantees a fresh index.
     """
     db_path = db_path_fn()
-    if not db_path.exists():
-        return False
 
+    if not db_path.exists():
+        build_index(db_path_fn=db_path_fn)
+        return db_path
+
+    # DB exists — check freshness
     with get_connection(db_path) as conn:
         venv = _infer_venv(conn)
         project_dirs = _infer_project_dirs(conn)
@@ -465,7 +459,7 @@ def refresh_index(db_path_fn: Callable[[], Path] = get_db_path) -> bool:
     if not venv:
         venv = find_venv()
     if not venv:
-        return False
+        return db_path
 
     # Auto-detect project dir from cwd if not already indexed
     cwd = Path.cwd().resolve()
@@ -473,13 +467,12 @@ def refresh_index(db_path_fn: Callable[[], Path] = get_db_path) -> bool:
         if cwd not in project_dirs:
             project_dirs.append(cwd)
 
-    if not is_index_stale(venv, db_path_fn=db_path_fn):
-        return False
+    if is_index_stale(venv, db_path_fn=db_path_fn):
+        build_index(
+            venv, project_dirs=project_dirs or None, db_path_fn=db_path_fn,
+        )
 
-    build_index(
-        venv, project_dirs=project_dirs or None, db_path_fn=db_path_fn,
-    )
-    return True
+    return db_path
 
 
 def _fuzzy_search(
@@ -716,7 +709,6 @@ def search(
         return SearchResult()
 
     db_path = ensure_db(db_path_fn)
-    refresh_index(db_path_fn)
 
     # Handle dotted queries: "mlx.ones", "pydantic.BaseModel", etc.
     if "." in query:
