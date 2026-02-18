@@ -75,31 +75,31 @@ UI_INPUT_ELEMENTS = [
           "radio button group"),
     Query("find", "multiselect", ["multiselect"],
           "multi-selection widget"),
-    Query("find", "marimo text", ["_impl.input.text"],
-          "text input field (qualified to marimo)"),
-    Query("find", "marimo number", ["_impl.input.number"],
-          "number input field (qualified to marimo)"),
+    Query("find", "marimo text", ["marimo.ui.text"],
+          "text input field (public name)"),
+    Query("find", "marimo number", ["marimo.ui.number"],
+          "number input field (public name)"),
     Query("find", "code_editor", ["code_editor"],
           "code editor widget"),
     Query("find", "file_browser", ["file_browser"],
           "file browser widget"),
     Query("find", "form", ["form"],
           "form wrapper"),
-    Query("find", "marimo switch", ["_impl.switch.switch"],
-          "toggle switch widget (qualified to marimo)"),
+    Query("find", "marimo switch", ["marimo.ui.switch"],
+          "toggle switch widget (public name)"),
 ]
 
 UI_DATA_ELEMENTS = [
-    Query("find", "marimo dataframe", ["dataframe.dataframe"],
-          "dataframe viewer/editor"),
-    Query("find", "marimo table", ["_impl.table"],
-          "interactive table"),
+    Query("find", "marimo dataframe", ["marimo.ui.dataframe"],
+          "dataframe viewer/editor (public name)"),
+    Query("find", "marimo table", ["marimo.ui.table"],
+          "interactive table (public name)"),
     Query("find", "plotly", ["marimo"],
           "plotly chart widget"),
     Query("find", "altair_chart", ["altair_chart"],
           "altair chart widget"),
-    Query("find", "marimo chat", ["chat.chat"],
-          "chat interface widget"),
+    Query("find", "marimo chat", ["marimo.ui.chat"],
+          "chat interface widget (public name)"),
     Query("find", "microphone", ["microphone"],
           "audio capture widget"),
 ]
@@ -141,15 +141,28 @@ NAME_RESOLUTION = [
           "bare class name"),
     Query("show", "file_browser", ["file_browser"],
           "bare compound name"),
+    Query("show", "marimo.ui.slider", ["slider"],
+          "public qualified name (re-exported)"),
     Query("show", "marimo._plugins.ui._impl.input.slider",
           ["slider", "start", "stop"],
-          "full qualified name"),
+          "full internal qualified name"),
     Query("show", "UIElement", ["UIElement"],
           "base class from internal module"),
     Query("show", "MarimoIslandGenerator", ["MarimoIslandGenerator"],
           "top-level re-exported class"),
     Query("show", "create_asgi_app", ["create_asgi_app"],
           "top-level re-exported function"),
+]
+
+PUBLIC_API_RESOLUTION = [
+    Query("find", "marimo.ui", ["marimo.ui"],
+          "find marimo.ui namespace"),
+    Query("find", "marimo.ui.slider", ["marimo.ui.slider"],
+          "find public re-exported slider"),
+    Query("show", "marimo.ui.slider", ["slider"],
+          "show public slider signature"),
+    Query("show", "marimo.ui.text", ["text"],
+          "show public text widget"),
 ]
 
 MEMBERS_INSPECTION = [
@@ -160,7 +173,7 @@ MEMBERS_INSPECTION = [
     Query("members",
           "marimo._plugins.ui._impl.file_browser.file_browser",
           ["__init__"],
-          "file_browser class members"),
+          "file_browser class members (internal path)"),
 ]
 
 SUITES = {
@@ -169,6 +182,7 @@ SUITES = {
     "Stateless display": STATELESS_DISPLAY,
     "Core API": CORE_API,
     "Name resolution": NAME_RESOLUTION,
+    "Public API resolution": PUBLIC_API_RESOLUTION,
     "Members inspection": MEMBERS_INSPECTION,
 }
 

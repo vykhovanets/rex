@@ -6,11 +6,25 @@ Walks .venv, parses all .py files, extracts symbols without importing.
 from __future__ import annotations
 
 import ast
+import logging
 import os
 import warnings
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
+
+log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class ReExport:
+    """A re-exported name found in an __init__.py."""
+
+    local_name: str  # name as exposed (alias or original)
+    source_module: str  # absolute dotted source module
+    source_name: str  # name in source (before 'as')
+    is_module: bool  # True when importing a subpackage/module
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,6 +193,91 @@ class ASTExtractor(ast.NodeVisitor):
 
 
 
+def _resolve_relative_import(
+    level: int, module: str | None, current_package: str,
+) -> str:
+    """Convert a relative import to an absolute module path.
+
+    ``from ._impl.input import slider`` inside ``marimo._plugins.ui``
+    with *level=1* and *module='_impl.input'* yields
+    ``marimo._plugins.ui._impl.input``.
+    """
+    parts = current_package.split(".")
+    if level > len(parts):
+        raise ValueError(
+            f"Attempted relative import beyond top-level package: "
+            f"level={level}, package={current_package!r}"
+        )
+    base = ".".join(parts[: len(parts) - level + 1])
+    if module:
+        return f"{base}.{module}"
+    return base
+
+
+def extract_reexports(init_path: Path, module_name: str) -> list[ReExport]:
+    """Parse an ``__init__.py`` and return structured re-export list.
+
+    Walks top-level statements plus the bodies of ``try/except`` and ``if``
+    blocks (but NOT function/class bodies) looking for ``import`` and
+    ``from … import`` statements.
+    """
+    try:
+        source = init_path.read_text(encoding="utf-8", errors="replace")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SyntaxWarning)
+            tree = ast.parse(source, filename=str(init_path))
+    except (SyntaxError, ValueError):
+        return []
+
+    results: list[ReExport] = []
+
+    def _walk_stmts(stmts: list[ast.stmt]) -> None:
+        for node in stmts:
+            if isinstance(node, ast.ImportFrom):
+                if node.names and len(node.names) == 1 and node.names[0].name == "*":
+                    log.debug("Skipping star import in %s", module_name)
+                    continue
+                if node.level and node.level > 0:
+                    # relative import
+                    try:
+                        source_mod = _resolve_relative_import(
+                            node.level, node.module, module_name,
+                        )
+                    except ValueError:
+                        continue
+                else:
+                    source_mod = node.module or ""
+                for alias in node.names:
+                    results.append(ReExport(
+                        local_name=alias.asname or alias.name,
+                        source_module=source_mod,
+                        source_name=alias.name,
+                        is_module=False,
+                    ))
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    results.append(ReExport(
+                        local_name=alias.asname or alias.name,
+                        source_module=alias.name,
+                        source_name=alias.name,
+                        is_module=True,
+                    ))
+            # Recurse into compound statements (try/except, if/else)
+            elif isinstance(node, (ast.Try, )):
+                _walk_stmts(node.body)
+                for handler in node.handlers:
+                    _walk_stmts(handler.body)
+                _walk_stmts(node.orelse)
+                _walk_stmts(node.finalbody)
+            elif isinstance(node, ast.If):
+                _walk_stmts(node.body)
+                _walk_stmts(node.orelse)
+            # Skip FunctionDef, AsyncFunctionDef, ClassDef bodies
+
+    _walk_stmts(tree.body)
+    return results
+
+
 def parse_file(file_path: Path, module_name: str) -> list[Symbol]:
     """Parse a Python file and extract all symbols."""
     try:
@@ -214,6 +313,179 @@ def parse_file(file_path: Path, module_name: str) -> list[Symbol]:
         # Some files have deeply nested AST (e.g., generated math expressions)
         pass
     return extractor.symbols
+
+
+def _find_init_files(package_path: Path, package_name: str) -> dict[str, Path]:
+    """Recursively collect ``__init__.py`` files under *package_path*.
+
+    Walks into ``_``-prefixed dirs (private sub-packages often hold the
+    actual definitions). Returns ``{dotted_module_name: init_path}``.
+    """
+    result: dict[str, Path] = {}
+    init = package_path / "__init__.py"
+    if init.is_file():
+        result[package_name] = init
+
+    for root, dirs, files in os.walk(package_path):
+        dirs[:] = [
+            d for d in dirs
+            if not d.startswith(".") and d != "__pycache__"
+        ]
+        for d in list(dirs):
+            sub_init = Path(root) / d / "__init__.py"
+            if sub_init.is_file():
+                rel = Path(root) / d
+                rel_parts = rel.relative_to(package_path.parent).parts
+                mod_name = ".".join(rel_parts)
+                result[mod_name] = sub_init
+    return result
+
+
+def _module_to_path(module_name: str, package_path: Path) -> Path | None:
+    """Convert a dotted module name to a ``.py`` or ``.pyi`` file path.
+
+    Used for resolving source modules that are plain files (not packages).
+    """
+    parts = module_name.split(".")
+    base = package_path.parent  # site-packages
+    rel = Path(*parts)
+    for suffix in (".py", ".pyi"):
+        candidate = base / rel.with_suffix(suffix)
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _parse_module_cached(
+    module_name: str,
+    init_files: dict[str, Path],
+    package_path: Path,
+    cache: dict[str, list[Symbol]],
+) -> list[Symbol]:
+    """Parse a module (via ``__init__.py`` or ``.py``), with caching."""
+    if module_name in cache:
+        return cache[module_name]
+
+    path: Path | None = init_files.get(module_name)
+    if path is None:
+        path = _module_to_path(module_name, package_path)
+    if path is None:
+        cache[module_name] = []
+        return []
+
+    symbols = parse_file(path, module_name)
+    cache[module_name] = symbols
+    return symbols
+
+
+def _resolve_reexports(
+    package_name: str, package_path: Path,
+) -> Iterator[Symbol]:
+    """Follow ``__init__.py`` re-exports, yielding symbols with public names.
+
+    BFS from the top-level ``__init__.py``.  For each init file, calls
+    ``extract_reexports()`` and either queues sub-packages (module re-exports)
+    or resolves individual symbols (symbol re-exports).
+    """
+    init_files = _find_init_files(package_path, package_name)
+    if package_name not in init_files:
+        return  # no top-level __init__.py
+
+    parse_cache: dict[str, list[Symbol]] = {}
+    seen_qnames: set[str] = set()
+    visited_mods: set[str] = set()  # source modules already processed
+
+    # queue entries: (source_module_name, public_prefix)
+    queue: deque[tuple[str, str]] = deque()
+    queue.append((package_name, package_name))
+
+    while queue:
+        src_mod, pub_prefix = queue.popleft()
+        if src_mod in visited_mods:
+            continue
+        visited_mods.add(src_mod)
+
+        init_path = init_files.get(src_mod)
+        if init_path is None:
+            continue
+
+        reexports = extract_reexports(init_path, src_mod)
+
+        for rex in reexports:
+            if rex.is_module:
+                # ``import subpkg`` or ``import subpkg as alias``
+                # Queue sub-package with its public prefix
+                sub_pub = f"{pub_prefix}.{rex.local_name}"
+                queue.append((rex.source_module, sub_pub))
+                continue
+
+            # Check if the source_name is itself a sub-package with __init__
+            sub_mod = f"{rex.source_module}.{rex.source_name}"
+            if sub_mod in init_files:
+                sub_pub = f"{pub_prefix}.{rex.local_name}"
+                queue.append((sub_mod, sub_pub))
+                continue
+
+            # Symbol re-export — parse the source module and find the symbol
+            symbols = _parse_module_cached(
+                rex.source_module, init_files, package_path, parse_cache,
+            )
+            for sym in symbols:
+                if sym.name != rex.source_name:
+                    continue
+
+                # Build public qualified name
+                if sym.symbol_type in ("class", "module"):
+                    pub_qname = f"{pub_prefix}.{rex.local_name}"
+                elif sym.symbol_type in ("method", "async_method"):
+                    # Method of a re-exported class — skip standalone,
+                    # these are yielded when the parent class is processed
+                    continue
+                else:
+                    pub_qname = f"{pub_prefix}.{rex.local_name}"
+
+                if pub_qname in seen_qnames:
+                    continue
+                seen_qnames.add(pub_qname)
+
+                yield Symbol(
+                    name=rex.local_name,
+                    qualified_name=pub_qname,
+                    symbol_type=sym.symbol_type,
+                    signature=sym.signature,
+                    docstring=sym.docstring,
+                    file_path=sym.file_path,
+                    line_no=sym.line_no,
+                    bases=sym.bases,
+                    return_annotation=sym.return_annotation,
+                )
+
+                # If it's a class, also yield its methods with remapped names
+                if sym.symbol_type == "class":
+                    class_prefix_old = f"{sym.qualified_name}."
+                    for child in symbols:
+                        if not child.qualified_name.startswith(class_prefix_old):
+                            continue
+                        # Only direct children (one level deep)
+                        rest = child.qualified_name[len(class_prefix_old):]
+                        if "." in rest:
+                            continue
+                        child_pub = f"{pub_qname}.{child.name}"
+                        if child_pub in seen_qnames:
+                            continue
+                        seen_qnames.add(child_pub)
+                        yield Symbol(
+                            name=child.name,
+                            qualified_name=child_pub,
+                            symbol_type=child.symbol_type,
+                            signature=child.signature,
+                            docstring=child.docstring,
+                            file_path=child.file_path,
+                            line_no=child.line_no,
+                            bases=child.bases,
+                            return_annotation=child.return_annotation,
+                        )
+                break  # found the symbol, stop iterating
 
 
 def find_venv(start_dir: Path | None = None) -> Path | None:
@@ -332,14 +604,24 @@ def iter_packages(site_packages: Path) -> Iterator[tuple[str, Path]]:
 
 
 def index_package(package_name: str, package_path: Path) -> Iterator[Symbol]:
-    """Index a single package, yielding symbols."""
+    """Index a single package, yielding symbols.
+
+    **Phase 1**: Walk public directories (``iter_py_files`` skips ``_*`` dirs)
+    and yield symbols with filesystem-based qualified names.
+
+    **Phase 2**: Follow ``__init__.py`` re-exports (``_resolve_reexports``)
+    to yield symbols from private modules with their *public* qualified names.
+
+    A ``seen_qnames`` set prevents duplicates across both phases.
+    """
     if package_path.is_file():
-        # Single .py file module
+        # Single .py file module — no re-exports to resolve
         yield from parse_file(package_path, package_name)
         return
 
-    # Directory package — include _-prefixed files (public symbols
-    # are often defined there and re-exported via __init__.py)
+    seen_qnames: set[str] = set()
+
+    # Phase 1: walk public dirs (iter_py_files now skips _* dirs)
     for file_path in iter_py_files(package_path):
         rel_path = file_path.relative_to(package_path.parent)
         parts = list(rel_path.parts)
@@ -350,19 +632,29 @@ def index_package(package_name: str, package_path: Path) -> Iterator[Symbol]:
             parts[-1] = Path(parts[-1]).stem  # Remove .py/.pyi
 
         module_name = ".".join(parts)
-        yield from parse_file(file_path, module_name)
+        for sym in parse_file(file_path, module_name):
+            seen_qnames.add(sym.qualified_name)
+            yield sym
+
+    # Phase 2: resolve re-exports from __init__.py files
+    for sym in _resolve_reexports(package_name, package_path):
+        if sym.qualified_name not in seen_qnames:
+            seen_qnames.add(sym.qualified_name)
+            yield sym
 
 
 def iter_py_files(directory: Path) -> Iterator[Path]:
-    """Yield .py/.pyi file paths under directory, skipping hidden/cache dirs.
+    """Yield .py/.pyi file paths under directory, skipping private/hidden dirs.
 
+    Skips ``_``-prefixed, ``.``-prefixed, and ``__pycache__`` directories.
     When both foo.py and foo.pyi exist, only foo.py is yielded.
     Stubs are used as fallback for compiled extensions (e.g. .so/.pyd).
     """
     for root, dirs, files in os.walk(directory):
         dirs[:] = [
             d for d in dirs
-            if not d.startswith(".") and d != "__pycache__"
+            if not d.startswith((".", "_"))
+            and d != "__pycache__"
         ]
         py_files = {f for f in files if f.endswith(".py")}
         for f in py_files:

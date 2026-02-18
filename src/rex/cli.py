@@ -86,8 +86,7 @@ def index(
 ) -> None:
     """Build or rebuild the symbol index."""
     def progress(pkg: str, current: int, total: int) -> None:
-        typer.echo(f"  [{current}/{total}] {pkg}", nl=False)
-        typer.echo("\r", nl=False)
+        typer.echo(f"\r\033[K  [{current}/{total}] {pkg}", nl=False)
 
     project_dirs = [p.resolve() for p in project] if project else None
     try:

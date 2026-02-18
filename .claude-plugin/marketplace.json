@@ -9,7 +9,7 @@
       "name": "rex",
       "source": "./",
       "description": "Sub-second Python symbol search for .venv packages",
-      "version": "0.1.11"
+      "version": "0.1.12"
     }
   ]
 }

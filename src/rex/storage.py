@@ -554,13 +554,32 @@ def _sanitize_fts_query(query: str) -> str:
     return " ".join(fts_parts)
 
 
-def _dunder_sort_key(sym: Symbol) -> tuple[int, str]:
-    """Sort key: public first, __dunder__ second, _private last."""
+_TYPE_PRIORITY = {
+    "module": 0,
+    "class": 1,
+    "function": 2,
+    "async_function": 2,
+    "method": 3,
+    "async_method": 3,
+}
+
+# Over-fetch cap: FTS returns results in BM25+rowid order.  When scores
+# are tied, rowid order dominates and can fill all slots with one type
+# (e.g. methods) before higher-priority types (classes) appear.
+# We fetch up to this many rows then sort+truncate to the real limit.
+_FTS_FETCH_CAP = 200
+
+
+def _symbol_sort_key(sym: Symbol) -> tuple[int, int, str]:
+    """Sort: type (module>class>func>method), then visibility, then name."""
+    type_rank = _TYPE_PRIORITY.get(sym.symbol_type, 4)
     if sym.name.startswith("__"):
-        return (1, sym.name)
-    if sym.name.startswith("_"):
-        return (2, sym.name)
-    return (0, sym.name)
+        vis = 1
+    elif sym.name.startswith("_"):
+        vis = 2
+    else:
+        vis = 0
+    return (type_rank, vis, sym.name)
 
 
 def _fts_query_col(
@@ -638,10 +657,9 @@ def _search_core(
         if fts_query and remaining > 0:
             fts_results = _fts_query_col(
                 fts_query, "{name qualified_name}",
-                conn, remaining, symbol_type, seen,
+                conn, _FTS_FETCH_CAP, symbol_type, seen,
             )
             seen.update(r.qualified_name for r in fts_results)
-            remaining -= len(fts_results)
 
         # LIKE fallback on name/qualified_name/signature
         if not exact_results and not fts_results:
@@ -659,14 +677,15 @@ def _search_core(
                     sql += " AND symbol_type = ?"
                     params.append(symbol_type)
                 sql += " ORDER BY name LIMIT ?"
-                params.append(limit)
+                params.append(_FTS_FETCH_CAP)
                 rows = conn.execute(sql, params).fetchall()
                 fts_results = [row_to_symbol(row) for row in rows]
                 seen.update(r.qualified_name for r in fts_results)
-                remaining = limit - len(exact_results) - len(fts_results)
 
-        exact_results.sort(key=_dunder_sort_key)
-        fts_results.sort(key=_dunder_sort_key)
+        exact_results.sort(key=_symbol_sort_key)
+        fts_results.sort(key=_symbol_sort_key)
+        fts_results = fts_results[:remaining]
+        remaining -= len(fts_results)
         all_fts = exact_results + fts_results
 
         if remaining <= 0:
@@ -674,13 +693,12 @@ def _search_core(
 
         # --- Phase 2: approximate (docstring FTS + rapidfuzz) ------
         docstring_results: list[Symbol] = []
-        if fts_query:
+        if fts_query and remaining > 0:
             docstring_results = _fts_query_col(
                 fts_query, "{docstring}",
-                conn, remaining, symbol_type, seen,
+                conn, _FTS_FETCH_CAP, symbol_type, seen,
             )
             seen.update(r.qualified_name for r in docstring_results)
-            remaining -= len(docstring_results)
 
         fuzzy_results: list[Symbol] = []
         if remaining > 0:
@@ -689,7 +707,8 @@ def _search_core(
             )
 
         approx = docstring_results + fuzzy_results
-        approx.sort(key=_dunder_sort_key)
+        approx.sort(key=_symbol_sort_key)
+        approx = approx[:remaining]
         return SearchResult(fts_results=all_fts, fuzzy_results=approx)
 
 
@@ -722,6 +741,20 @@ def search(
                 ).fetchone()
                 if row:
                     return SearchResult(fts_results=[row_to_symbol(row)])
+
+            # Namespace prefix browse: return direct children of the prefix
+            prefix = query + "."
+            rows = conn.execute(
+                """SELECT * FROM symbols
+                   WHERE qualified_name LIKE ?
+                   AND qualified_name NOT LIKE ?
+                   ORDER BY name LIMIT ?""",
+                (prefix + "%", prefix + "%.%", _FTS_FETCH_CAP),
+            ).fetchall()
+            if rows:
+                results = [row_to_symbol(row) for row in rows]
+                results.sort(key=_symbol_sort_key)
+                return SearchResult(fts_results=results[:limit])
 
     return _search_core(query, limit, symbol_type, db_path)
 
@@ -938,7 +971,7 @@ def get_members(
             (prefix + "%", prefix + "%.%"),
         ).fetchall()
         results = [row_to_symbol(row) for row in rows]
-        results.sort(key=_dunder_sort_key)
+        results.sort(key=_symbol_sort_key)
         return results
 
 
