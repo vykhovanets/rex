@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "rex": {
-      "command": "rex-mcp",
-      "args": ["serve"],
+      "command": "uvx",
+      "args": ["--from", "rex-index", "rex-mcp", "serve"],
       "autoApprove": ["rex_find", "rex_show", "rex_members"]
     }
   }
