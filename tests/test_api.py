@@ -264,7 +264,7 @@ class TestSearchSuggestion:
         assert "Not in a Python project" not in hint
 
     def test_fuzzy_only_outside_project(self, indexed_db, monkeypatch):
-        monkeypatch.setattr("rex.api.find_venv", lambda: None)
+        monkeypatch.setattr("rex.api.find_venv_cached", lambda start_dir=None: None)
         result = search("BaseModl", db_path_fn=indexed_db)
         hint = search_suggestion("BaseModl", result)
         assert hint is not None
@@ -272,7 +272,7 @@ class TestSearchSuggestion:
         assert "Not in a Python project" in hint
 
     def test_empty_outside_project(self, monkeypatch):
-        monkeypatch.setattr("rex.api.find_venv", lambda: None)
+        monkeypatch.setattr("rex.api.find_venv_cached", lambda start_dir=None: None)
         result = SearchResult()
         hint = search_suggestion("torch", result)
         assert "Not in a Python project" in hint

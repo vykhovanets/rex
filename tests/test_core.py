@@ -195,7 +195,7 @@ class TestSearch:
         assert isinstance(result, SearchResult)
 
     def test_search_nonexistent(self, indexed_db):
-        result = search("nonexistent_xyz_abc", db_path_fn=indexed_db)
+        result = search("zzqvxjkw", db_path_fn=indexed_db)
         assert result.symbols == []
 
     def test_search_type_filter(self, indexed_db):

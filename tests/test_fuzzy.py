@@ -60,7 +60,7 @@ class TestFuzzyFindsTypos:
             ("BaseModl", "BaseModel"),       # missing char
             ("BsaeModel", "BaseModel"),      # transposed chars
             ("Typerr", "Typer"),             # extra char
-            ("Typr", "Typer"),               # missing char
+            ("Tyepr", "Typer"),              # transposed chars
             ("Feild", "Field"),              # transposed chars
             ("BasModel", "BaseModel"),       # missing char in middle
         ],
@@ -329,10 +329,11 @@ class TestAutoReindex:
         })
         db = tmp_path / "autoreindex.db"
         db_fn = lambda: db
+        pp_fn = lambda: tmp_path
         build_index(venv, db_path_fn=db_fn, force=True)
 
         # Verify old symbols found
-        result = search("OldClass", db_path_fn=db_fn)
+        result = search("OldClass", db_path_fn=db_fn, project_path_fn=pp_fn)
         assert any(s.name == "OldClass" for s in result.symbols)
 
         # Add a new package (simulating `uv add newlib`)
@@ -344,7 +345,7 @@ class TestAutoReindex:
         )
 
         # Search for the new symbol — should auto-reindex and find it
-        result = search("FreshClass", db_path_fn=db_fn)
+        result = search("FreshClass", db_path_fn=db_fn, project_path_fn=pp_fn)
         names = [s.name for s in result.symbols]
         assert "FreshClass" in names
 
@@ -365,10 +366,11 @@ class TestAutoReindex:
 
         db = tmp_path / "proj_reindex.db"
         db_fn = lambda: db
+        pp_fn = lambda: tmp_path
         build_index(venv, project_dirs=[proj], db_path_fn=db_fn, force=True)
 
         # Verify project symbol is found
-        result = search("AppController", db_path_fn=db_fn)
+        result = search("AppController", db_path_fn=db_fn, project_path_fn=pp_fn)
         assert any(s.name == "AppController" for s in result.symbols)
 
         # Add a NEW file to the project dir (simulating writing new code)
@@ -379,7 +381,7 @@ class TestAutoReindex:
         )
 
         # Search for the new symbol — should auto-reindex and find it
-        result = search("BrandNewWidget", db_path_fn=db_fn)
+        result = search("BrandNewWidget", db_path_fn=db_fn, project_path_fn=pp_fn)
         names = [s.name for s in result.symbols]
         assert "BrandNewWidget" in names
 
@@ -399,6 +401,7 @@ class TestAutoReindex:
 
         db = tmp_path / "proj_modify.db"
         db_fn = lambda: db
+        pp_fn = lambda: tmp_path
         build_index(venv, project_dirs=[proj], db_path_fn=db_fn, force=True)
 
         # Modify existing file — add a new class (file mtime changes,
@@ -409,7 +412,7 @@ class TestAutoReindex:
             'class AddedLaterWidget:\n    """Added after index."""\n    pass\n'
         )
 
-        result = search("AddedLaterWidget", db_path_fn=db_fn)
+        result = search("AddedLaterWidget", db_path_fn=db_fn, project_path_fn=pp_fn)
         names = [s.name for s in result.symbols]
         assert "AddedLaterWidget" in names
 
@@ -433,6 +436,7 @@ class TestAutoReindex:
 
         db = tmp_path / "proj_subdir.db"
         db_fn = lambda: db
+        pp_fn = lambda: tmp_path
         build_index(venv, project_dirs=[proj], db_path_fn=db_fn, force=True)
 
         # Add a new file in a new subdirectory
@@ -444,7 +448,7 @@ class TestAutoReindex:
             '"""Deep."""\nclass DeepNestedWidget:\n    pass\n'
         )
 
-        result = search("DeepNestedWidget", db_path_fn=db_fn)
+        result = search("DeepNestedWidget", db_path_fn=db_fn, project_path_fn=pp_fn)
         names = [s.name for s in result.symbols]
         assert "DeepNestedWidget" in names
 

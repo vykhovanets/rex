@@ -379,21 +379,15 @@ def is_index_stale(
     return False
 
 
-def _infer_venv(conn: sqlite3.Connection) -> Path | None:
-    """Infer venv path from stored package source paths."""
-    row = conn.execute(
-        "SELECT source_path FROM packages "
-        f"WHERE source_path NOT LIKE '{_PROJECT_PREFIX}%' LIMIT 1"
-    ).fetchone()
-    if not row:
-        return None
-    # source_path = /path/.venv/lib/python3.14/site-packages/pkg
-    # Walk up to find "site-packages", then go up 3 levels to venv
-    path = Path(row["source_path"])
-    for parent in path.parents:
-        if parent.name == "site-packages":
-            return parent.parent.parent.parent
-    return None
+_venv_cache: dict[Path, Path | None] = {}
+
+
+def find_venv_cached(start_dir: Path) -> Path | None:
+    """Cached venv lookup — resolves once per project path per process."""
+    resolved = start_dir.resolve()
+    if resolved not in _venv_cache:
+        _venv_cache[resolved] = find_venv(start_dir=resolved)
+    return _venv_cache[resolved]
 
 
 def _infer_project_dirs(conn: sqlite3.Connection) -> list[Path]:
@@ -440,46 +434,40 @@ def clean_index(db_path_fn: Callable[[], Path] = get_db_path) -> list[str]:
     return removed
 
 
-def ensure_db(db_path_fn: Callable[[], Path] = get_db_path) -> Path:
-    """Return DB path, building index if DB doesn't exist yet."""
-    db_path = db_path_fn()
-    if not db_path.exists():
-        build_index(db_path_fn=db_path_fn)
-    return db_path
+def ensure_db(
+    db_path_fn: Callable[[], Path] = get_db_path,
+    project_path_fn: Callable[[], Path] = Path.cwd,
+) -> Path:
+    """Return DB path, building index from scratch or refreshing if stale.
 
-
-def refresh_index(db_path_fn: Callable[[], Path] = get_db_path) -> bool:
-    """Check if index is stale and rebuild if needed.
-
-    Auto-detects venv and project dirs from DB + cwd.
-    Returns True if reindexing happened.
+    Always uses the current project's venv — never infers from stored DB.
     """
     db_path = db_path_fn()
+    venv = find_venv_cached(project_path_fn())
+
+    if not venv:
+        return db_path  # no venv, nothing to index
+
+    # Detect project dir for indexing
+    project_dir = project_path_fn().resolve()
+    project_dirs: list[Path] = []
+    if (project_dir / "pyproject.toml").exists() or (project_dir / "setup.py").exists():
+        project_dirs.append(project_dir)
+
     if not db_path.exists():
-        return False
+        build_index(venv=venv, project_dirs=project_dirs, db_path_fn=db_path_fn)
+        return db_path
 
+    # Merge previously indexed project dirs
     with get_connection(db_path) as conn:
-        venv = _infer_venv(conn)
-        project_dirs = _infer_project_dirs(conn)
+        for d in _infer_project_dirs(conn):
+            if d not in project_dirs:
+                project_dirs.append(d)
 
-    if not venv:
-        venv = find_venv()
-    if not venv:
-        return False
+    if is_index_stale(venv, db_path_fn=db_path_fn):
+        build_index(venv, project_dirs=project_dirs, db_path_fn=db_path_fn)
 
-    # Auto-detect project dir from cwd if not already indexed
-    cwd = Path.cwd().resolve()
-    if (cwd / "pyproject.toml").exists() or (cwd / "setup.py").exists():
-        if cwd not in project_dirs:
-            project_dirs.append(cwd)
-
-    if not is_index_stale(venv, db_path_fn=db_path_fn):
-        return False
-
-    build_index(
-        venv, project_dirs=project_dirs or None, db_path_fn=db_path_fn,
-    )
-    return True
+    return db_path
 
 
 def _fuzzy_search(
@@ -710,13 +698,13 @@ def search(
     limit: int = 50,
     symbol_type: str | None = None,
     db_path_fn: Callable[[], Path] = get_db_path,
+    project_path_fn: Callable[[], Path] = Path.cwd,
 ) -> SearchResult:
     """Search with automatic freshness check."""
     if not query or not query.strip():
         return SearchResult()
 
-    db_path = ensure_db(db_path_fn)
-    refresh_index(db_path_fn)
+    db_path = ensure_db(db_path_fn, project_path_fn=project_path_fn)
 
     # Handle dotted queries: "mlx.ones", "pydantic.BaseModel", etc.
     if "." in query:
@@ -806,9 +794,10 @@ def _search_with_inheritance(query: str, db_path: Path, limit: int) -> list[Symb
 def get_symbol(
     name: str,
     db_path_fn: Callable[[], Path] = get_db_path,
+    project_path_fn: Callable[[], Path] = Path.cwd,
 ) -> Symbol | None:
     """Get a symbol by qualified or short name."""
-    db_path = ensure_db(db_path_fn)
+    db_path = ensure_db(db_path_fn, project_path_fn=project_path_fn)
 
     with get_connection(db_path) as conn:
         qname = _resolve_qualified_name(name, conn)
@@ -928,9 +917,10 @@ def _prefix_glob_unambiguous(
 def get_members(
     name: str,
     db_path_fn: Callable[[], Path] = get_db_path,
+    project_path_fn: Callable[[], Path] = Path.cwd,
 ) -> list[Symbol]:
     """Get members of a class or module (accepts short or qualified names)."""
-    db_path = ensure_db(db_path_fn)
+    db_path = ensure_db(db_path_fn, project_path_fn=project_path_fn)
 
     with get_connection(db_path) as conn:
         qualified_name = _resolve_qualified_name(name, conn)
