@@ -440,7 +440,10 @@ def clean_index(db_path_fn: Callable[[], Path] = get_db_path) -> list[str]:
     return removed
 
 
-def ensure_db(db_path_fn: Callable[[], Path] = get_db_path) -> Path:
+def ensure_db(
+    db_path_fn: Callable[[], Path] = get_db_path,
+    project_path_fn: Callable[[], Path] = Path.cwd,
+) -> Path:
     """Return DB path, building index from scratch or refreshing if stale.
 
     Single entry point for all queries — guarantees a fresh index.
@@ -448,7 +451,7 @@ def ensure_db(db_path_fn: Callable[[], Path] = get_db_path) -> Path:
     db_path = db_path_fn()
 
     if not db_path.exists():
-        build_index(db_path_fn=db_path_fn)
+        build_index(venv=find_venv(start_dir=project_path_fn()), db_path_fn=db_path_fn)
         return db_path
 
     # DB exists — check freshness
@@ -457,15 +460,15 @@ def ensure_db(db_path_fn: Callable[[], Path] = get_db_path) -> Path:
         project_dirs = _infer_project_dirs(conn)
 
     if not venv:
-        venv = find_venv()
+        venv = find_venv(start_dir=project_path_fn())
     if not venv:
         return db_path
 
-    # Auto-detect project dir from cwd if not already indexed
-    cwd = Path.cwd().resolve()
-    if (cwd / "pyproject.toml").exists() or (cwd / "setup.py").exists():
-        if cwd not in project_dirs:
-            project_dirs.append(cwd)
+    # Auto-detect project dir from project_path if not already indexed
+    project_dir = project_path_fn().resolve()
+    if (project_dir / "pyproject.toml").exists() or (project_dir / "setup.py").exists():
+        if project_dir not in project_dirs:
+            project_dirs.append(project_dir)
 
     if is_index_stale(venv, db_path_fn=db_path_fn):
         build_index(
@@ -703,12 +706,13 @@ def search(
     limit: int = 50,
     symbol_type: str | None = None,
     db_path_fn: Callable[[], Path] = get_db_path,
+    project_path_fn: Callable[[], Path] = Path.cwd,
 ) -> SearchResult:
     """Search with automatic freshness check."""
     if not query or not query.strip():
         return SearchResult()
 
-    db_path = ensure_db(db_path_fn)
+    db_path = ensure_db(db_path_fn, project_path_fn=project_path_fn)
 
     # Handle dotted queries: "mlx.ones", "pydantic.BaseModel", etc.
     if "." in query:
@@ -798,9 +802,10 @@ def _search_with_inheritance(query: str, db_path: Path, limit: int) -> list[Symb
 def get_symbol(
     name: str,
     db_path_fn: Callable[[], Path] = get_db_path,
+    project_path_fn: Callable[[], Path] = Path.cwd,
 ) -> Symbol | None:
     """Get a symbol by qualified or short name."""
-    db_path = ensure_db(db_path_fn)
+    db_path = ensure_db(db_path_fn, project_path_fn=project_path_fn)
 
     with get_connection(db_path) as conn:
         qname = _resolve_qualified_name(name, conn)
@@ -920,9 +925,10 @@ def _prefix_glob_unambiguous(
 def get_members(
     name: str,
     db_path_fn: Callable[[], Path] = get_db_path,
+    project_path_fn: Callable[[], Path] = Path.cwd,
 ) -> list[Symbol]:
     """Get members of a class or module (accepts short or qualified names)."""
-    db_path = ensure_db(db_path_fn)
+    db_path = ensure_db(db_path_fn, project_path_fn=project_path_fn)
 
     with get_connection(db_path) as conn:
         qualified_name = _resolve_qualified_name(name, conn)

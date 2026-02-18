@@ -8,10 +8,11 @@ Usage:
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.types import ClientCapabilities, RootsCapability, TextContent, Tool
 
 from .api import format_symbol_detail, format_symbol_line, search_suggestion, show_symbol
 from .storage import get_members, search
@@ -34,6 +35,24 @@ server = Server(
         "'Use Rex MCP tools (rex_find, rex_show, rex_members) for any library API lookup before guessing.'"
     ),
 )
+
+
+async def _get_project_path() -> Path:
+    """Get project path from MCP client roots, fall back to cwd."""
+    try:
+        ctx = server.request_context
+        session = ctx.session
+        if session.check_client_capability(
+            ClientCapabilities(roots=RootsCapability())
+        ):
+            result = await session.list_roots()
+            if result.roots:
+                uri_path = result.roots[0].uri.path
+                if uri_path:
+                    return Path(uri_path)
+    except (LookupError, Exception):
+        pass
+    return Path.cwd()
 
 
 @server.list_tools()
@@ -97,14 +116,17 @@ async def list_tools() -> list[Tool]:
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     """Handle tool calls."""
+    project_path = await _get_project_path()
+    ppfn = lambda: project_path
+
     if name == "rex_find":
         query = arguments["query"]
         limit = arguments.get("limit", 15)
         symbol_type = arguments.get("symbol_type")
-        result = search(query, limit=limit, symbol_type=symbol_type)
+        result = search(query, limit=limit, symbol_type=symbol_type, project_path_fn=ppfn)
 
         if not result.symbols:
-            hint = search_suggestion(query, result)
+            hint = search_suggestion(query, result, project_path_fn=ppfn)
             msg = hint or f"No symbols found for: {query}"
             return [TextContent(type="text", text=msg)]
 
@@ -114,19 +136,19 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text=format_symbol_detail(hit))]
 
         output = []
-        hint = search_suggestion(query, result)
+        hint = search_suggestion(query, result, project_path_fn=ppfn)
         if hint:
             output.append(f"Note: {hint}\n")
         output.append(f"Found {len(result.symbols)} results for '{query}':\n")
         for sym in result.symbols:
             output.append(format_symbol_line(sym))
-            output.append(f"   \u2192 {sym.qualified_name}")
+            output.append(f"   → {sym.qualified_name}")
 
         return [TextContent(type="text", text="\n".join(output))]
 
     elif name == "rex_show":
         qname = arguments["name"]
-        result = show_symbol(qname)
+        result = show_symbol(qname, project_path_fn=ppfn)
 
         if isinstance(result, list):
             if result:
@@ -138,7 +160,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
     elif name == "rex_members":
         qname = arguments["name"]
-        results = get_members(qname)
+        results = get_members(qname, project_path_fn=ppfn)
 
         if not results:
             return [TextContent(type="text", text=f"No members found for: {qname}")]
