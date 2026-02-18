@@ -362,7 +362,7 @@ def iter_py_files(directory: Path) -> Iterator[Path]:
     for root, dirs, files in os.walk(directory):
         dirs[:] = [
             d for d in dirs
-            if not d.startswith((".", "_")) and d != "__pycache__"
+            if not d.startswith(".") and d != "__pycache__"
         ]
         py_files = {f for f in files if f.endswith(".py")}
         for f in py_files:
